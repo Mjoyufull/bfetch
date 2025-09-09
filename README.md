@@ -57,10 +57,10 @@ A lightning-fast system information display tool written in pure C, specifically
 
 ```bash
 # Run directly
-nix run github:yourusername/bfetch
+nix run github:Mjoyufull/bfetch
 
 # Install to profile
-nix profile install github:yourusername/bfetch
+nix profile install github:Mjoyufull/bfetch
 
 # Add to NixOS configuration
 environment.systemPackages = [
@@ -71,7 +71,7 @@ environment.systemPackages = [
 ### Build from Source
 
 ```bash
-git clone https://github.com/yourusername/bfetch.git
+git clone https://github.com/Mjoyufull/bfetch.git
 cd bfetch
 
 # Build with maximum optimizations

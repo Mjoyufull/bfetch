@@ -47,7 +47,7 @@
                 - Aggressive compiler optimizations
                 - Perfect visual match to the original shell script
               '';
-              homepage = "https://github.com/yourusername/bfetch";
+              homepage = "https://github.com/Mjoyufull/bfetch";
               license = licenses.mit;
               platforms = platforms.linux;
               maintainers = [ ];
