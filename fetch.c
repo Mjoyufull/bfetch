@@ -881,12 +881,22 @@ static void print_fetch(const struct sysinfo_fast* info) {
 int main(int argc, char* argv[]) {
     struct sysinfo_fast info;
     
-    // Check for --gentoo flag
+    // Check for command line arguments
     int force_gentoo = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--gentoo") == 0) {
             force_gentoo = 1;
-            break;
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+            printf("bfetch version 1.1.2-cowmeed\n");
+            return 0;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("bfetch - Ultra-fast system information display\n");
+            printf("Usage: %s [OPTIONS]\n\n", argv[0]);
+            printf("Options:\n");
+            printf("  -v, --version    Show version information\n");
+            printf("  -h, --help       Show this help message\n");
+            printf("      --gentoo     Force Gentoo mode (works on any system)\n");
+            return 0;
         }
     }
     
