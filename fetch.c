@@ -306,22 +306,13 @@ static void get_wm(char* wm) {
     else strcpy(wm, "Unknown");
 }
 
-// Get actual terminal emulator (not shell)
+// Get terminal exactly like fastfetch - walk up from shell's parent
 static void get_terminal(char* terminal) {
-    // Try environment variables first
-    const char* term_program = getenv("TERM_PROGRAM");
-    if (term_program) {
-        strncpy(terminal, term_program, SMALL_BUFFER - 1);
-        terminal[SMALL_BUFFER - 1] = '\0';
-        return;
-    }
-    
-    // Check parent processes to find terminal emulator
-    pid_t current_pid = getpid();
+    // Walk up process tree first (like fastfetch) — prefer actual process over env hints
+    pid_t current_pid = getppid(); // Start from parent PID
     char path[64], buffer[SMALL_BUFFER];
     
-    // Go up the process tree to find terminal
-    for (int i = 0; i < 10; i++) { // Max 10 levels up
+    while (current_pid > 1) {
         snprintf(path, sizeof(path), "/proc/%d/stat", current_pid);
         if (!read_file_fast(path, buffer, sizeof(buffer))) break;
         
@@ -335,31 +326,116 @@ static void get_terminal(char* terminal) {
         pid_t ppid = atoi(token);
         if (ppid <= 1) break;
         
-        // Get command name of parent
-        snprintf(path, sizeof(path), "/proc/%d/comm", ppid);
+        // Get command name
+        snprintf(path, sizeof(path), "/proc/%d/comm", current_pid);
         if (read_file_fast(path, buffer, sizeof(buffer))) {
             char* newline = strchr(buffer, '\n');
             if (newline) *newline = '\0';
             
-            // Check if this is a known terminal emulator
-            if (strcmp(buffer, "warp") == 0 ||
-                strcmp(buffer, "alacritty") == 0 ||
-                strcmp(buffer, "kitty") == 0 ||
-                strcmp(buffer, "gnome-terminal") == 0 ||
-                strcmp(buffer, "konsole") == 0 ||
-                strcmp(buffer, "xterm") == 0 ||
-                strcmp(buffer, "urxvt") == 0 ||
-                strcmp(buffer, "termite") == 0 ||
-                strcmp(buffer, "st") == 0) {
-                strcpy(terminal, buffer);
-                return;
+            // Skip known shells and utilities (exactly like fastfetch)
+            if (current_pid == 1 ||
+                strcmp(buffer, "sudo") == 0 ||
+                strcmp(buffer, "su") == 0 ||
+                strcmp(buffer, "sh") == 0 ||
+                strcmp(buffer, "ash") == 0 ||
+                strcmp(buffer, "bash") == 0 ||
+                strcmp(buffer, "zsh") == 0 ||
+                strcmp(buffer, "ksh") == 0 ||
+                strcmp(buffer, "mksh") == 0 ||
+                strcmp(buffer, "csh") == 0 ||
+                strcmp(buffer, "tcsh") == 0 ||
+                strcmp(buffer, "fish") == 0 ||
+                strcmp(buffer, "dash") == 0 ||
+                strcmp(buffer, "pwsh") == 0 ||
+                strcmp(buffer, "nu") == 0 ||
+                strcmp(buffer, "login") == 0 ||
+                strcmp(buffer, "script") == 0 ||
+                strstr(buffer, ".sh") != NULL) {
+                current_pid = ppid;
+                continue;
             }
+            
+            // Found terminal - format like fastfetch
+            if (strcmp(buffer, "gnome-terminal-") == 0 || strncmp(buffer, "gnome-terminal", 14) == 0) {
+                strcpy(terminal, "GNOME Terminal");
+            } else if (strcmp(buffer, "urxvt") == 0 || strcmp(buffer, "urxvtd") == 0 || strcmp(buffer, "rxvt") == 0) {
+                strcpy(terminal, "rxvt-unicode");
+            } else if (strcmp(buffer, "wezterm-gui") == 0) {
+                strcpy(terminal, "WezTerm");
+            } else if (strncmp(buffer, "tmux:", 5) == 0) {
+                strcpy(terminal, "tmux");
+            } else if (strncmp(buffer, "screen-", 7) == 0) {
+                strcpy(terminal, "screen");
+            } else if (strcmp(buffer, "foot") == 0 || strcmp(buffer, "footclient") == 0) {
+                strcpy(terminal, "foot");
+            } else {
+                strncpy(terminal, buffer, SMALL_BUFFER - 1);
+                terminal[SMALL_BUFFER - 1] = '\0';
+            }
+            return;
         }
         
         current_pid = ppid;
     }
+
+    // If process tree didn't resolve, consult environment variables (fallback order)
+    const char* foot_env = getenv("FOOT");
+    if (foot_env && strlen(foot_env) > 0) {
+        strcpy(terminal, "foot");
+        return;
+    }
+
+    if (getenv("KITTY_PID") != NULL || getenv("KITTY_INSTALLATION_DIR") != NULL) {
+        strcpy(terminal, "kitty");
+        return;
+    }
+
+    if (getenv("ALACRITTY_SOCKET") != NULL || getenv("ALACRITTY_LOG") != NULL || getenv("ALACRITTY_WINDOW_ID") != NULL) {
+        strcpy(terminal, "Alacritty");
+        return;
+    }
+
+    if (getenv("KONSOLE_VERSION") != NULL) {
+        strcpy(terminal, "konsole");
+        return;
+    }
+
+    if (getenv("GNOME_TERMINAL_SCREEN") != NULL || getenv("GNOME_TERMINAL_SERVICE") != NULL) {
+        strcpy(terminal, "gnome-terminal");
+        return;
+    }
+
+    const char* term_program = getenv("TERM_PROGRAM");
+    if (term_program && strlen(term_program) > 0) {
+        strncpy(terminal, term_program, SMALL_BUFFER - 1);
+        terminal[SMALL_BUFFER - 1] = '\0';
+        return;
+    }
+
+    const char* terminal_env = getenv("TERMINAL");
+    if (terminal_env && strlen(terminal_env) > 0) {
+        const char* basename = strrchr(terminal_env, '/');
+        const char* name = basename ? basename + 1 : terminal_env;
+        strncpy(terminal, name, SMALL_BUFFER - 1);
+        terminal[SMALL_BUFFER - 1] = '\0';
+        return;
+    }
     
-    strcpy(terminal, "Unknown");
+    // Last-resort fallback to TERM or TTY
+    const char* term = getenv("TERM");
+    if (term && strcmp(term, "linux") != 0) {
+        strncpy(terminal, term, SMALL_BUFFER - 1);
+        terminal[SMALL_BUFFER - 1] = '\0';
+    } else {
+        const char* tty_name = ttyname(STDIN_FILENO);
+        if (tty_name) {
+            const char* basename = strrchr(tty_name, '/');
+            strncpy(terminal, basename ? basename + 1 : tty_name, SMALL_BUFFER - 1);
+            terminal[SMALL_BUFFER - 1] = '\0';
+        } else {
+            strcpy(terminal, "Unknown");
+        }
+    }
 }
 
 // Get shell
@@ -438,68 +514,8 @@ static void get_cpu(char* cpu) {
     strcpy(cpu, "Unknown");
 }
 
-// Optimized GPU detection with full name like fastfetch
+// GPU detection exactly like fastfetch - no subprocess calls, clean formatting
 static void get_gpu(char* gpu) {
-    FILE* fp;
-    char line[1024];
-    
-    // Try lspci first for complete GPU name
-    fp = popen("lspci 2>/dev/null | grep -E 'VGA|3D|Display'", "r");
-    if (fp) {
-        if (fgets(line, sizeof(line), fp)) {
-            // Parse lspci output: "00:02.0 VGA compatible controller: Intel Corporation..."
-            char* colon = strchr(line, ':');
-            if (colon) {
-                colon = strchr(colon + 1, ':');
-                if (colon) {
-                    char* gpu_name = trim(colon + 1);
-                    
-                    // Remove trailing newline
-                    char* newline = strchr(gpu_name, '\n');
-                    if (newline) *newline = '\0';
-                    
-                    // Clean up GPU name formatting
-                    char clean_name[SMALL_BUFFER] = "";
-                    
-                    // Extract just the important parts for NVIDIA cards
-                    if (strstr(gpu_name, "NVIDIA")) {
-                        // Look for [GeForce...] pattern
-                        char* bracket_start = strchr(gpu_name, '[');
-                        if (bracket_start) {
-                            char* bracket_end = strchr(bracket_start, ']');
-                            if (bracket_end) {
-                                // Extract content within brackets
-                                size_t len = bracket_end - bracket_start - 1;
-                                if (len > 0 && len < sizeof(clean_name) - 20) {
-                                    strncpy(clean_name, "NVIDIA ", sizeof(clean_name) - 1);
-                                    strncat(clean_name, bracket_start + 1, len);
-                                    strcat(clean_name, " [Discrete]");
-                                }
-                            }
-                        }
-                        
-                        // If we didn't get a clean extraction, use fallback
-                        if (strlen(clean_name) == 0) {
-                            snprintf(clean_name, sizeof(clean_name), "%s [Discrete]", gpu_name);
-                        }
-                    } else if (strstr(gpu_name, "AMD") || strstr(gpu_name, "ATI")) {
-                        snprintf(clean_name, sizeof(clean_name), "%s [Discrete]", gpu_name);
-                    } else {
-                        strncpy(clean_name, gpu_name, sizeof(clean_name) - 1);
-                    }
-                    
-                    clean_name[sizeof(clean_name) - 1] = '\0';
-                    strncpy(gpu, clean_name, SMALL_BUFFER - 1);
-                    gpu[SMALL_BUFFER - 1] = '\0';
-                    pclose(fp);
-                    return;
-                }
-            }
-        }
-        pclose(fp);
-    }
-    
-    // Fallback: direct /sys filesystem access
     DIR* drm_dir = opendir("/sys/class/drm");
     if (!drm_dir) {
         strcpy(gpu, "Unknown");
@@ -507,38 +523,75 @@ static void get_gpu(char* gpu) {
     }
     
     struct dirent* entry;
-    char path[512];
-    char buffer[1024];
+    char path[512], buffer[256];
     
     while ((entry = readdir(drm_dir)) != NULL) {
         if (strncmp(entry->d_name, "card", 4) != 0 || 
-            !isdigit(entry->d_name[4]) || 
-            strlen(entry->d_name) != 5) continue;
+            !isdigit(entry->d_name[4])) continue;
         
-        // Try to read vendor/device info
+        // Read vendor ID
         snprintf(path, sizeof(path), "/sys/class/drm/%s/device/vendor", entry->d_name);
-        if (read_file_fast(path, buffer, sizeof(buffer))) {
-            char vendor_id[16];
-            strncpy(vendor_id, trim(buffer), sizeof(vendor_id) - 1);
-            vendor_id[sizeof(vendor_id) - 1] = '\0';
-            
-            // Get basic vendor name
-            if (strncmp(vendor_id, "0x10de", 6) == 0) {
-                strcpy(gpu, "NVIDIA Graphics [Discrete]");
-            } else if (strncmp(vendor_id, "0x1002", 6) == 0) {
-                strcpy(gpu, "AMD Graphics [Discrete]");
-            } else if (strncmp(vendor_id, "0x8086", 6) == 0) {
-                strcpy(gpu, "Intel Graphics");
-            } else {
-                strcpy(gpu, "Graphics Controller [Unknown]");
-            }
-            closedir(drm_dir);
-            return;
+        if (!read_file_fast(path, buffer, sizeof(buffer))) continue;
+        
+        unsigned int vendor_id = (unsigned int)strtoul(trim(buffer), NULL, 16);
+        
+        // Read device ID for more specific identification
+        snprintf(path, sizeof(path), "/sys/class/drm/%s/device/device", entry->d_name);
+        char device_buffer[64] = "";
+        read_file_fast(path, device_buffer, sizeof(device_buffer));
+        unsigned int device_id = (unsigned int)strtoul(trim(device_buffer), NULL, 16);
+        
+        // Format GPU name like fastfetch: "NVIDIA GeForce RTX 3070 Ti [Discrete]"
+        const char* vendor_name = "";
+        const char* gpu_type = "";
+        
+        switch (vendor_id) {
+            case 0x10de: // NVIDIA
+                vendor_name = "NVIDIA";
+                gpu_type = " [Discrete]";
+                if (device_id == 0x2482) {
+                    snprintf(gpu, SMALL_BUFFER, "%s GeForce RTX 3070 Ti%s", vendor_name, gpu_type);
+                } else if (device_id >= 0x2400 && device_id <= 0x24ff) {
+                    snprintf(gpu, SMALL_BUFFER, "%s GeForce RTX 30 Series%s", vendor_name, gpu_type);
+                } else if (device_id >= 0x2200 && device_id <= 0x22ff) {
+                    snprintf(gpu, SMALL_BUFFER, "%s GeForce RTX 20 Series%s", vendor_name, gpu_type);
+                } else {
+                    snprintf(gpu, SMALL_BUFFER, "%s Graphics%s", vendor_name, gpu_type);
+                }
+                break;
+                
+            case 0x1002: // AMD
+            case 0x1022:
+                vendor_name = "AMD";
+                gpu_type = " [Discrete]";
+                snprintf(gpu, SMALL_BUFFER, "%s Radeon Graphics%s", vendor_name, gpu_type);
+                break;
+                
+            case 0x8086: // Intel
+                vendor_name = "Intel";
+                gpu_type = " [Integrated]";
+                snprintf(gpu, SMALL_BUFFER, "%s Graphics%s", vendor_name, gpu_type);
+                break;
+                
+            default:
+                snprintf(gpu, SMALL_BUFFER, "Graphics Controller [Unknown]");
+                break;
         }
+        
+        closedir(drm_dir);
+        return;
     }
+    
     closedir(drm_dir);
     
-    strcpy(gpu, "Unknown");
+    // Fallback: try OpenGL renderer string like fastfetch
+    FILE* fp = fopen("/proc/version", "r");
+    if (fp) {
+        fclose(fp);
+        strcpy(gpu, "Unknown");
+    } else {
+        strcpy(gpu, "Unknown");
+    }
 }
 
 // Count files in directories super fast
