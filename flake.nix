@@ -15,7 +15,7 @@
         packages = {
           default = pkgs.stdenv.mkDerivation {
             pname = "bfetch";
-            version = "1.0.0";
+            version = "1.1.2-cowmeed";
 
             src = ./.;
 
@@ -34,18 +34,21 @@
             '';
 
             meta = with pkgs.lib; {
-              description = "Ultra-fast system information fetch tool optimized for Bedrock Linux";
+              description = "Ultra-fast system information fetch tool with Gentoo support";
               longDescription = ''
                 bfetch is a lightning-fast system information display tool written in C.
-                It's specifically optimized for Bedrock Linux systems and is 675x faster
-                than traditional shell scripts and 57x faster than fastfetch.
+                It's optimized for Bedrock Linux and other systems, running 55x faster
+                than fastfetch with comprehensive package manager support.
                 
                 Features:
-                - Beautiful ASCII art with Nord color scheme
-                - 0.002 second execution time
-                - Direct filesystem access (no subprocess spawning)
+                - Beautiful ASCII art with Nord color scheme (Bedrock + Gentoo modes)
+                - 0.002 second execution time (55x faster than fastfetch)
+                - Direct filesystem access for all package managers
+                - Perfect GPU detection (NVIDIA GeForce RTX format)
+                - Fixed terminal detection (shows actual terminal, not shell)
+                - --gentoo flag for Gentoo ASCII art
+                - Support for RPM, DPKG, Pacman, Emerge, Nix packages
                 - Aggressive compiler optimizations
-                - Perfect visual match to the original shell script
               '';
               homepage = "https://github.com/Mjoyufull/bfetch";
               license = licenses.mit;

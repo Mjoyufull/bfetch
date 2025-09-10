@@ -2,34 +2,48 @@
 
 > **The fastest system information fetch tool in the universe**
 
-A lightning-fast system information display tool written in pure C, specifically optimized for Bedrock Linux. bfetch is **675x faster** than traditional shell scripts and **57x faster** than fastfetch, executing in just **0.002 seconds**.
+A lightning-fast system information display tool written in pure C, optimized for Bedrock Linux and other systems. bfetch v1.1.2-cowmeed is **55x faster** than fastfetch with comprehensive package manager support and beautiful ASCII art.
 
 ## Performance Comparison
 
 | Tool | Execution Time | Speed Comparison |
 |------|---------------|------------------|
-| **bfetch** | **0.002s** | **Baseline** |
-| fastfetch | 0.115s | 57x slower |
+| **bfetch v1.1.2-cowmeed** | **0.002s** | **Baseline** |
+| fastfetch | 0.11s | 55x slower |
 | Original shell script | 1.35s | 675x slower |
 
 ## Features
 
-- **Blazing fast** - 0.002 second execution time
-- **Beautiful ASCII art** with Nord color palette
-- **Bedrock Linux optimized** - Multi-strata package counting
-- **Zero subprocess spawning** - Direct filesystem access only  
-- **Perfect visual match** to the original shell script
+- **Blazing fast** - 0.002 second execution time (55x faster than fastfetch)
+- **Beautiful ASCII art** with Nord color palette (Bedrock + Gentoo modes)
+- **Multi-system support** - Bedrock Linux, Gentoo, and others
+- **Perfect package detection** - RPM, DPKG, Pacman, Emerge, Nix support
+- **Enhanced GPU detection** - Shows full GPU names (e.g. NVIDIA GeForce RTX 3070 Ti [Discrete])
+- **Fixed terminal detection** - Shows actual terminal emulator, not shell
+- **Zero subprocess spawning** - Direct filesystem access for all package managers
+- **Gentoo mode** - Use `--gentoo` flag for beautiful Gentoo ASCII art
 - **Aggressive optimizations** - Native CPU instructions, LTO
-- **Tiny binary** - Only 15KB stripped
+- **Doas support** - Automatic detection for Gentoo users
+
+## Usage
+
+```bash
+# Default Bedrock mode
+./bfetch
+
+# Force Gentoo mode (works on any system)
+./bfetch --gentoo
+```
 
 ## Visual Output
 
+### Bedrock Mode (Default)
 ```
  ┌──┐ ┌──────────────────────────────────┐ ┌────┐
- │▒▒│ │─\\\\\\\\\\\\\\\─────────────────────│ │ 境 │
+ │▒▒│ │─\\\\\\\\\\\\\────────────────────│ │ 境 │
  │██│ │──\\\      \\\────────────────────│ │    │
  │██│ │───\\\      \\\───────────────────│ │ 界 │
- │██│ │────\\\      \\\\\\\\\\\\\\\\\\\────│ └────┘
+ │██│ │────\\\      \\\\\\\\\\\\\\\\\────│ └────┘
  │██│ │─────\\\                    \\\───│
  │██│ │──────\\\                    \\\──│
  │██│ │───────\\\        ──────      \\\─│
@@ -38,16 +52,36 @@ A lightning-fast system information display tool written in pure C, specifically
  │██│ │──────────\\\               ///───│
  │██│ │───────────\\\////////////////────│
  │██│ └──────────────────────────────────┘
- │██│ Version: 0.7.31beta2 Poki
+ │██│ Version: 0.7.31beta2 (Poki)
  │██│ Kernel: 6.16.4-200.fc42.x86_64
- │██│ Uptime: 2 days, 39 minutes
+ │██│ Uptime: 2 days, 8 hours, 24 minutes
  │██│ WM: Hyprland
- │██│ Packages: 40 (nix),3076 (rpm),284 (emerge),557 (pacman)
- │██│ Terminal: zsh
- │██│ Memory: 15Gi / 31Gi
+ │██│ Packages: 3155 (rpm),558 (pacman),284 (emerge),9 (nix)
+ │██│ Terminal: WarpTerminal
+ │██│ Memory: 20Gi / 31Gi
  │██│ Shell: zsh
  │██│ CPU: AMD Ryzen 5 3600 6-Core Processor
- │▒▒│ GPU: NVIDIA Corporation GA104 [GeForce RTX 3070 Ti] (rev a1)
+ │▒▒│ GPU: NVIDIA GeForce RTX 3070 Ti [Discrete]
+ └──┘
+```
+
+### Gentoo Mode (`--gentoo` flag)
+```
+ ┌──┐ ┌──────────────────────────────────┐ ┌─────┐
+ │▒▒│ │─────────\\\\\────────────────│ │  G  │
+ │██│ │───────//+++++++++++\─────────────│ │  a  │
+ │██│ │──────//+++++\\\+++++\───────────│ │  n  │
+ │██│ │─────//+++++//  /+++++++\─────────│ │  y  │
+ │██│ │──────+++++++\\++++++++++\───────│ │  m  │
+ │██│ │────────++++++++++++++++++\\──────│ │  e  │
+ │██│ │─────────//++++++++++++++//───────│ │  d  │
+ │██│ │───────//++++++++++++++//─────────│ │  e  │
+ │██│ │──── //++++++++++++++//───────────│ └─────┘
+ │██│ │─────//++++++++++//───────────────│
+ │██│ │─────//+++++++//──────────────────│
+ │██│ │──────////////────────────────────│
+ │██│ └──────────────────────────────────┘
+ │██│ GPU: NVIDIA GeForce RTX 3070 Ti [Discrete]
  └──┘
 ```
 

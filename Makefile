@@ -20,10 +20,17 @@ fast: $(SOURCE)
 	$(CC) $(AGGRESSIVE_FLAGS) -o $(TARGET) $(SOURCE)
 	strip --strip-all $(TARGET)
 
-# Install to /usr/local/bin
+# Install to /usr/local/bin (supports both sudo and doas)
 install: $(TARGET)
-	sudo cp $(TARGET) /usr/local/bin/
-	sudo chmod +x /usr/local/bin/$(TARGET)
+	@if command -v doas >/dev/null 2>&1; then \
+		echo "Using doas for installation..."; \
+		doas cp $(TARGET) /usr/local/bin/; \
+		doas chmod +x /usr/local/bin/$(TARGET); \
+	else \
+		echo "Using sudo for installation..."; \
+		sudo cp $(TARGET) /usr/local/bin/; \
+		sudo chmod +x /usr/local/bin/$(TARGET); \
+	fi
 
 clean:
 	rm -f $(TARGET)
