@@ -13,7 +13,7 @@
 #include <sys/wait.h>
 
 // Buffer sizes optimized for performance
-#define BUFFER_SIZE 4096
+#define BUFFER_SIZE 65536
 #define SMALL_BUFFER 256
 #define LINE_BUFFER 1024
 
@@ -49,12 +49,13 @@
 typedef enum {
     SYSTEM_BEDROCK,
     SYSTEM_GENTOO,
+    SYSTEM_CACHYOS,
     SYSTEM_OTHER
 } system_type_t;
 
 // System info structure
 struct sysinfo_fast {
-    char version[SMALL_BUFFER];
+    char distro[SMALL_BUFFER];
     char kernel[SMALL_BUFFER];
     char uptime[SMALL_BUFFER];
     char memory[SMALL_BUFFER];
@@ -91,6 +92,24 @@ static system_type_t detect_system_type() {
         access("/usr/portage", F_OK) == 0) {
         return SYSTEM_GENTOO;
     }
+
+    // Check for CachyOS
+    if (access("/etc/cachyos-release", F_OK) == 0) {
+        return SYSTEM_CACHYOS;
+    }
+    
+    // Check os-release for "cachyos"
+    FILE* f = fopen("/etc/os-release", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (strcasestr(line, "cachyos")) {
+                fclose(f);
+                return SYSTEM_CACHYOS;
+            }
+        }
+        fclose(f);
+    }
     
     return SYSTEM_OTHER;
 }
@@ -100,11 +119,19 @@ static int read_file_fast(const char* path, char* buffer, size_t size) {
     int fd = open(path, O_RDONLY);
     if (fd == -1) return 0;
     
-    ssize_t bytes = read(fd, buffer, size - 1);
+    size_t total_bytes = 0;
+    ssize_t bytes_read;
+    
+    while (total_bytes < size - 1) {
+        bytes_read = read(fd, buffer + total_bytes, size - 1 - total_bytes);
+        if (bytes_read <= 0) break;
+        total_bytes += bytes_read;
+    }
+    
     close(fd);
     
-    if (bytes > 0) {
-        buffer[bytes] = '\0';
+    if (total_bytes > 0) {
+        buffer[total_bytes] = '\0';
         return 1;
     }
     return 0;
@@ -149,59 +176,69 @@ static int is_process_running(const char* name) {
     return found;
 }
 
-// Get Bedrock version ultra-fast - read from bedrock filesystem
-static void get_version(char* version) {
+// Get Distro Name (OS) - parses os-release for PRETTY_NAME
+static void get_distro(char* distro) {
     char buffer[SMALL_BUFFER];
+    char* name = NULL;
     
-    // Try reading from bedrock version file directly
-    if (read_file_fast("/bedrock/etc/bedrock-release", buffer, sizeof(buffer))) {
-        char* line = strtok(buffer, "\n");
-        while (line) {
-            if (strncmp(line, "VERSION=", 8) == 0) {
-                char* ver = line + 8;
-                if (*ver == '"') ver++; // Skip quote
-                char* end = strchr(ver, '"');
+    // helper to extract value from KEY="Value" or KEY=Value
+    auto void extract_value(char* line, const char* key) {
+        if (strncmp(line, key, strlen(key)) == 0) {
+            char* val = line + strlen(key);
+            if (*val == '"') val++;
+            char* end = strchr(val, '"');
+            if (end) *end = '\0';
+            else {
+                // handle unquoted value
+                end = strchr(val, '\n');
                 if (end) *end = '\0';
-                strcpy(version, ver);
-                return;
             }
-            line = strtok(NULL, "\n");
-        }
+            if (!name || strlen(val) > strlen(name)) name = val; // Prefer longer/prettier name
+        } 
     }
-    
-    // Fallback: try /bedrock/etc/os-release
+
+    // Try Bedrock first
     if (read_file_fast("/bedrock/etc/os-release", buffer, sizeof(buffer))) {
-        char* line = strtok(buffer, "\n");
-        while (line) {
-            if (strncmp(line, "VERSION=", 8) == 0) {
-                char* ver = line + 8;
-                if (*ver == '"') ver++;
-                char* end = strchr(ver, '"');
-                if (end) *end = '\0';
-                strcpy(version, ver);
-                return;
-            }
-            line = strtok(NULL, "\n");
-        }
+         char* line = strtok(buffer, "\n");
+         while (line) {
+             if (strncmp(line, "PRETTY_NAME=", 12) == 0) {
+                 char* val = line + 12;
+                 if (*val == '"') val++;
+                 char* end = strchr(val, '"');
+                 if (end) *end = '\0';
+                 strcpy(distro, val);
+                 return;
+             }
+             line = strtok(NULL, "\n");
+         }
     }
-    
-    // Try /etc/os-release as final fallback
+
+    // Try /etc/os-release
     if (read_file_fast("/etc/os-release", buffer, sizeof(buffer))) {
         char* line = strtok(buffer, "\n");
         while (line) {
-            if (strncmp(line, "VERSION=", 8) == 0 || strncmp(line, "VERSION_ID=", 11) == 0) {
-                char* ver = strchr(line, '=') + 1;
-                if (*ver == '"') ver++;
-                char* end = strchr(ver, '"');
-                if (end) *end = '\0';
-                strcpy(version, ver);
-                return;
-            }
-            line = strtok(NULL, "\n");
+             if (strncmp(line, "PRETTY_NAME=", 12) == 0) {
+                 char* val = line + 12;
+                 if (*val == '"') val++;
+                 char* end = strchr(val, '"');
+                 if (end) *end = '\0';
+                 strcpy(distro, val);
+                 return;
+             }
+             if (strncmp(line, "NAME=", 5) == 0 && !name) {
+                 char* val = line + 5;
+                 if (*val == '"') val++;
+                 char* end = strchr(val, '"');
+                 if (end) *end = '\0';
+                 strcpy(distro, val); // Fallback
+                 return;
+             }
+             line = strtok(NULL, "\n");
         }
     }
     
-    strcpy(version, "Unknown");
+    if (name) strcpy(distro, name);
+    else strcpy(distro, "Linux");
 }
 
 // Get kernel info from uname
@@ -265,13 +302,14 @@ static void get_memory(char* memory) {
         
         if (total > 0 && available >= 0) {
             long used = total - available;
-            // Use Gi format to match original (same as shell script's 'free -h' output)
-            if (total >= 1024 * 1024) {
-                snprintf(memory, SMALL_BUFFER, "%.0fGi / %.0fGi", 
-                    used / 1024.0 / 1024.0, total / 1024.0 / 1024.0);
+            // fastfetch style: 11.34 GiB / 31.25 GiB
+            double used_gib = used / 1024.0 / 1024.0;
+            double total_gib = total / 1024.0 / 1024.0;
+            
+            if (total_gib >= 1.0) {
+                snprintf(memory, SMALL_BUFFER, "%.2f GiB / %.2f GiB", used_gib, total_gib);
             } else {
-                snprintf(memory, SMALL_BUFFER, "%ldMi / %ldMi", 
-                    used / 1024, total / 1024);
+                snprintf(memory, SMALL_BUFFER, "%.2f MiB / %.2f MiB", used / 1024.0, total / 1024.0);
             }
         } else {
             strcpy(memory, "Unknown");
@@ -489,108 +527,326 @@ static inline int parse_prop_line(const char** line, const char* key, char* valu
     return len > 0 ? 1 : 0;
 }
 
-// Fast single-pass CPU info parser
+// Fast CPU info parser (Model + Cores + Freq)
 static void get_cpu(char* cpu) {
+    char model[SMALL_BUFFER] = "Unknown";
+    int cores = 0;
+    double mhz = 0.0;
+    
     char buffer[BUFFER_SIZE];
     if (read_file_fast("/proc/cpuinfo", buffer, sizeof(buffer))) {
-        const char* line = buffer;
-        const char* end = buffer + strlen(buffer);
+        char* line = buffer;
+        char* end = buffer + strlen(buffer);
         
         while (line < end) {
             // Find end of current line
             const char* line_end = line;
             while (line_end < end && *line_end != '\n') line_end++;
             
-            // Check for model name (first one wins)
-            if (parse_prop_line(&line, "model name", cpu, SMALL_BUFFER)) {
-                return;
+            // Skip leading whitespace for key matching
+            char* key_start = line;
+            while (key_start < line_end && isspace(*key_start)) key_start++;
+            
+            // Model Name
+            if (strncmp(key_start, "model name", 10) == 0) {
+                 // only parse if not set yet
+                 if (strcmp(model, "Unknown") == 0) {
+                     char temp[SMALL_BUFFER];
+                     // We pass 'line' here, parse_prop_line handles its own skipping but we should pass key_start?
+                     // Actually parse_prop_line takes the line pointer and scans for key.
+                     // But we already found the key manually?
+                     // reusing parse_prop_line is fine as it re-checks key.
+                     const char* ptr = line; // passing original line start to parse_prop_line
+                     if (parse_prop_line(&ptr, "model name", temp, sizeof(temp))) {
+                         strcpy(model, temp);
+                     }
+                 }
+            } 
+            // Count Processors (Logical Cores)
+            else if (strncmp(key_start, "processor", 9) == 0) {
+                cores++;
+            }
+            // Frequency (cpu MHz)
+            else if (mhz == 0.0 && strncmp(key_start, "cpu MHz", 7) == 0) {
+                 const char* ptr = line;
+                 char temp[32];
+                 if (parse_prop_line(&ptr, "cpu MHz", temp, sizeof(temp))) {
+                     mhz = atof(temp);
+                 }
             }
             
-            // Move to next line
-            line = line_end;
+            line = (char*)line_end;
             if (line < end && *line == '\n') line++;
         }
     }
-    strcpy(cpu, "Unknown");
+    
+    // Fallback for frequency if not found in cpuinfo (often static base freq there)
+    if (mhz == 0.0) {
+         char freq_buf[64];
+         if (read_file_fast("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq", freq_buf, sizeof(freq_buf))) {
+             mhz = atof(freq_buf) / 1000.0;
+         } else if (read_file_fast("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", freq_buf, sizeof(freq_buf))) {
+             mhz = atof(freq_buf) / 1000.0;
+         }
+    }
+
+    // Format: Model (Cores) @ Freq GHz
+    // Cleanup model name: remove "Processor", "CPU", duplicate spaces?
+    // User requested direct copy of fastfetch logic essentially.
+    
+    if (cores > 0 && mhz > 0.0) {
+        snprintf(cpu, SMALL_BUFFER, "%s (%d) @ %.2f GHz", model, cores, mhz / 1000.0);
+    } else if (cores > 0) {
+        snprintf(cpu, SMALL_BUFFER, "%s (%d)", model, cores);
+    } else {
+        strcpy(cpu, model);
+    }
 }
 
-// GPU detection exactly like fastfetch - no subprocess calls, clean formatting
-static void get_gpu(char* gpu) {
-    DIR* drm_dir = opendir("/sys/class/drm");
-    if (!drm_dir) {
-        strcpy(gpu, "Unknown");
-        return;
+// GPU Detection using PCI IDs (Strictly File-Based)
+
+typedef struct {
+    char vendor[128];
+    char name[128];
+} gpu_info_t;
+
+// Load PCI IDs file into a buffer
+static int load_pci_ids(char** buffer, size_t* size) {
+    const char* paths[] = {
+        "/usr/share/hwdata/pci.ids",
+        "/usr/share/misc/pci.ids",
+        "/usr/share/pciids/pci.ids",
+        "/var/lib/pciutils/pci.ids",
+        NULL
+    };
+    
+    for (int i = 0; paths[i]; i++) {
+        int fd = open(paths[i], O_RDONLY);
+        if (fd != -1) {
+            struct stat st;
+            if (fstat(fd, &st) == 0 && st.st_size > 0) {
+                *size = st.st_size;
+                *buffer = malloc(*size + 1);
+                if (*buffer) {
+                    if (read(fd, *buffer, *size) == *size) {
+                        (*buffer)[*size] = '\0';
+                        close(fd);
+                        return 1;
+                    }
+                    free(*buffer);
+                }
+            }
+            close(fd);
+        }
+    }
+    return 0;
+}
+
+// Parse PCI IDs to find vendor and device name
+// Ported/Adapted from fastfetch's gpu_pci.c logic
+static void parse_pci_ids(const char* pci_ids, size_t pci_ids_len, 
+                         unsigned int vendor_id, unsigned int device_id, 
+                         gpu_info_t* info) {
+    if (!pci_ids || !info) return;
+
+    // Default hex strings if not found
+    if (!info->vendor[0]) snprintf(info->vendor, sizeof(info->vendor), "%04x", vendor_id);
+    if (!info->name[0]) snprintf(info->name, sizeof(info->name), "%04x", device_id);
+
+    char vendor_search[32];
+    int vlen = snprintf(vendor_search, sizeof(vendor_search), "\n%04x  ", vendor_id);
+    
+    // Search for vendor
+    const char* v_start = (char*)memmem(pci_ids, pci_ids_len, vendor_search, vlen);
+    if (!v_start) return;
+    
+    v_start += vlen; // Skip ID and spaces
+    const char* v_end = strchr(v_start, '\n');
+    if (!v_end) return;
+    
+    // Copy vendor name
+    size_t name_len = v_end - v_start;
+    if (name_len >= sizeof(info->vendor)) name_len = sizeof(info->vendor) - 1;
+    strncpy(info->vendor, v_start, name_len);
+    info->vendor[name_len] = '\0';
+    
+    // Search for device within this vendor block
+    // The vendor block ends at the next line starting with a hex digit (or end of file)
+    // Device lines start with check tab + hex id
+    
+    char device_search[32];
+    int dlen = snprintf(device_search, sizeof(device_search), "\n\t%04x  ", device_id);
+    
+    const char* current = v_end; // Start searching from end of vendor line
+    const char* d_start = NULL;
+    
+    // Limit search to next vendor or EOF
+    while (*current) {
+        if (*current == '\n' && isxdigit(current[1])) break; // Start of next vendor
+        
+        // Use memmem for safer search within block? No, just scan manually or use strstr carefully
+        // Ideally we search until we hit next vendor.
+        
+        // Let's rely on finding the specific device string before we hit confirmed next vendor (non-tab start)
+        const char* potential = (char*)memmem(current, pci_ids + pci_ids_len - current, device_search, dlen);
+        if (!potential) return; // Not found in rest of file
+        
+        // Check if we passed a vendor boundary
+        // Find closest newline before 'potential' to check if it's a vendor line?
+        // Actually, memmem finds "\n\t%04x  ", so it guarantees it's a device line format. 
+        // We just need to ensure we haven't crossed into another vendor's block.
+        // But since we search specifically for device ID, collisions are possible across vendors.
+        // So strict parsing is better.
+        
+        // Optimization: scan line by line
+        const char* next_line = strchr(current, '\n');
+        if (!next_line) break;
+        current = next_line + 1;
+        
+        if (current[0] != '\t' && current[0] != '#') break; // New vendor or junk, stop
+        
+        // Check if this line matches our device
+        if (current[0] == '\t' && strncmp(current + 1, device_search + 2, 4) == 0) { // +2 skip \n\t
+             d_start = current + 1 + 6; // \tXXXX  (6 chars)
+             break;
+        }
     }
     
-    struct dirent* entry;
-    char path[512], buffer[256];
-    
-    while ((entry = readdir(drm_dir)) != NULL) {
-        if (strncmp(entry->d_name, "card", 4) != 0 || 
-            !isdigit(entry->d_name[4])) continue;
+    if (d_start) {
+        const char* d_end = strchr(d_start, '\n');
+        if (!d_end) d_end = pci_ids + pci_ids_len;
         
-        // Read vendor ID
-        snprintf(path, sizeof(path), "/sys/class/drm/%s/device/vendor", entry->d_name);
-        if (!read_file_fast(path, buffer, sizeof(buffer))) continue;
+        // Check for brackets [Name]
+        const char* bracket_open = memchr(d_start, '[', d_end - d_start);
+        const char* bracket_close = memchr(d_start, ']', d_end - d_start);
         
-        unsigned int vendor_id = (unsigned int)strtoul(trim(buffer), NULL, 16);
-        
-        // Read device ID for more specific identification
-        snprintf(path, sizeof(path), "/sys/class/drm/%s/device/device", entry->d_name);
-        char device_buffer[64] = "";
-        read_file_fast(path, device_buffer, sizeof(device_buffer));
-        unsigned int device_id = (unsigned int)strtoul(trim(device_buffer), NULL, 16);
-        
-        // Format GPU name like fastfetch: "NVIDIA GeForce RTX 3070 Ti [Discrete]"
-        const char* vendor_name = "";
-        const char* gpu_type = "";
-        
-        switch (vendor_id) {
-            case 0x10de: // NVIDIA
-                vendor_name = "NVIDIA";
-                gpu_type = " [Discrete]";
-                if (device_id == 0x2482) {
-                    snprintf(gpu, SMALL_BUFFER, "%s GeForce RTX 3070 Ti%s", vendor_name, gpu_type);
-                } else if (device_id >= 0x2400 && device_id <= 0x24ff) {
-                    snprintf(gpu, SMALL_BUFFER, "%s GeForce RTX 30 Series%s", vendor_name, gpu_type);
-                } else if (device_id >= 0x2200 && device_id <= 0x22ff) {
-                    snprintf(gpu, SMALL_BUFFER, "%s GeForce RTX 20 Series%s", vendor_name, gpu_type);
-                } else {
-                    snprintf(gpu, SMALL_BUFFER, "%s Graphics%s", vendor_name, gpu_type);
-                }
-                break;
-                
-            case 0x1002: // AMD
-            case 0x1022:
-                vendor_name = "AMD";
-                gpu_type = " [Discrete]";
-                snprintf(gpu, SMALL_BUFFER, "%s Radeon Graphics%s", vendor_name, gpu_type);
-                break;
-                
-            case 0x8086: // Intel
-                vendor_name = "Intel";
-                gpu_type = " [Integrated]";
-                snprintf(gpu, SMALL_BUFFER, "%s Graphics%s", vendor_name, gpu_type);
-                break;
-                
-            default:
-                snprintf(gpu, SMALL_BUFFER, "Graphics Controller [Unknown]");
-                break;
+        if (bracket_open && bracket_close && bracket_close > bracket_open) {
+            d_start = bracket_open + 1;
+            name_len = bracket_close - bracket_open - 1;
+        } else {
+            name_len = d_end - d_start;
         }
         
-        closedir(drm_dir);
-        return;
+        if (name_len >= sizeof(info->name)) name_len = sizeof(info->name) - 1;
+        strncpy(info->name, d_start, name_len);
+        info->name[name_len] = '\0';
+    }
+}
+
+// Clean up vendor name (strip Corporation, Inc, etc.)
+static void normalize_vendor(char* vendor, unsigned int vendor_id) {
+    // Fastfetch-style overrides based on ID
+    switch (vendor_id) {
+        case 0x10de: strcpy(vendor, "NVIDIA"); return;
+        case 0x1002: 
+        case 0x1022: strcpy(vendor, "AMD"); return;
+        case 0x8086: strcpy(vendor, "Intel"); return;
+        case 0x106b: strcpy(vendor, "Apple"); return;
+        case 0x15ad: strcpy(vendor, "VMware"); return;
+        case 0x80ee: strcpy(vendor, "VirtualBox"); return;
+        case 0x1414: strcpy(vendor, "Microsoft"); return;
+    }
+
+    // Fallback cleanup
+    if (strstr(vendor, " Corporation")) *strstr(vendor, " Corporation") = '\0';
+    else if (strstr(vendor, " Corp.")) *strstr(vendor, " Corp.") = '\0';
+    else if (strstr(vendor, ", Inc.")) *strstr(vendor, ", Inc.") = '\0';
+    else if (strstr(vendor, " Inc.")) *strstr(vendor, " Inc.") = '\0';
+}
+
+static void get_gpu(char* gpu) {
+    strcpy(gpu, "Unknown");
+    
+    DIR* pci_dir = opendir("/sys/bus/pci/devices");
+    if (!pci_dir) return;
+    
+    char* pci_ids_content = NULL;
+    size_t pci_ids_len = 0;
+    int has_pci_ids = load_pci_ids(&pci_ids_content, &pci_ids_len);
+    
+    struct dirent* entry;
+    // We want to find the "best" GPU. 
+    // Heuristic: Discrete > Integrated. 3D Controller > VGA Compatible.
+    
+    int best_score = -1;
+    gpu_info_t best_gpu = {0};
+    
+    while ((entry = readdir(pci_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        
+        char path[512], buffer[256];
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", entry->d_name);
+        if (!read_file_fast(path, buffer, sizeof(buffer))) continue;
+        
+        unsigned int class_code = (unsigned int)strtoul(buffer, NULL, 16);
+        // 0x0300 = VGA, 0x0302 = 3D Controller, 0x0380 = Display
+        if ((class_code >> 16) != 0x03) continue;
+        
+        // Read vendor/device
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", entry->d_name);
+        read_file_fast(path, buffer, sizeof(buffer));
+        unsigned int vendor_id = (unsigned int)strtoul(buffer, NULL, 16);
+        
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/device", entry->d_name);
+        read_file_fast(path, buffer, sizeof(buffer));
+        unsigned int device_id = (unsigned int)strtoul(buffer, NULL, 16);
+        
+        gpu_info_t current_gpu = {0};
+        if (has_pci_ids) {
+            parse_pci_ids(pci_ids_content, pci_ids_len, vendor_id, device_id, &current_gpu);
+        } else {
+            // Fallback: fastfetch generic naming
+             const char* vendor_name = NULL;
+             switch (vendor_id) {
+                case 0x10de: vendor_name = "NVIDIA"; break;
+                case 0x1002: case 0x1022: vendor_name = "AMD"; break;
+                case 0x8086: vendor_name = "Intel"; break;
+                default: break;
+            }
+            if (vendor_name) strcpy(current_gpu.vendor, vendor_name);
+            else snprintf(current_gpu.vendor, sizeof(current_gpu.vendor), "%04x", vendor_id);
+            
+            snprintf(current_gpu.name, sizeof(current_gpu.name), "%04x", device_id);
+        }
+        
+        // Calculate score
+        int score = 0;
+        // Discrete vs Integrated logic would go here (checking specific vendor/device ranges or memory usage)
+        // For now, prioritize NVIDIA/AMD over Intel, assuming Intel is often iGPU
+        if (vendor_id == 0x10de) score += 100; // NVIDIA
+        if (vendor_id == 0x1002) score += 90;  // AMD
+        if (vendor_id == 0x8086) score += 10;  // Intel
+        
+        if (score > best_score) {
+            best_score = score;
+            best_gpu = current_gpu;
+            
+            // Normalize vendor name immediately for scoring/candidate selection context if needed, 
+            // but definitely before final output.
+            normalize_vendor(best_gpu.vendor, vendor_id);
+        }
     }
     
-    closedir(drm_dir);
+    closedir(pci_dir);
+    if (pci_ids_content) free(pci_ids_content);
     
-    // Fallback: try OpenGL renderer string like fastfetch
-    FILE* fp = fopen("/proc/version", "r");
-    if (fp) {
-        fclose(fp);
-        strcpy(gpu, "Unknown");
-    } else {
-        strcpy(gpu, "Unknown");
+    if (best_score >= 0) {
+        // GPU: NVIDIA GeForce RTX 3070 Ti [Discrete]
+        // Add [Discrete] or [Integrated] based on vendor? 
+        // Heuristic: NVIDIA/AMD usually discrete, Intel usually integrated (unless Arc)
+        
+        const char* type_str = "";
+        // Simple heuristic - fastfetch checks memory/pci class etc. 
+        // We will assume NVIDIA/AMD are discrete and Intel is integrated for now to match user's logic roughly.
+        // Or better: check previous best_score logic?
+        
+        if (strcmp(best_gpu.vendor, "NVIDIA") == 0 || strcmp(best_gpu.vendor, "AMD") == 0) {
+            type_str = " [Discrete]";
+        } else if (strcmp(best_gpu.vendor, "Intel") == 0) {
+            type_str = " [Integrated]";
+        }
+        
+        snprintf(gpu, SMALL_BUFFER, "%s %s%s", best_gpu.vendor, best_gpu.name, type_str);
     }
 }
 
@@ -692,61 +948,109 @@ static int count_emerge_packages(const char* strata_path) {
     return total;
 }
 
-// Fast Nix package counting via profile manifest (NOT from strata - nix is global)
-static int count_nix_packages(const char* strata_path) {
-    (void)strata_path; // Unused - nix is not strata-specific
-    char profile_path[512];
-    char buffer[BUFFER_SIZE];
+// Helper to parse Nix manifest.json and count installed packages
+static int count_nix_packages_in_json(const char* buffer) {
+    if (!buffer) return 0;
     
-    // Nix packages are in user's home profile - the manifest.json format uses "elements" object
-    const char* home = getenv("HOME");
-    if (home) {
-        snprintf(profile_path, sizeof(profile_path), "%s/.nix-profile/manifest.json", home);
-        if (read_file_fast(profile_path, buffer, sizeof(buffer))) {
-            // New manifest format: count entries in "elements" object
-            // Each package is a key in the elements object
-            int elements_count = 0;
-            char* elements_start = strstr(buffer, "\"elements\":");
-            if (elements_start) {
-                elements_start = strchr(elements_start, '{');
-                if (elements_start) {
-                    char* pos = elements_start;
-                    int brace_count = 0;
-                    int in_string = 0;
-                    
-                    while (*pos) {
-                        if (*pos == '"' && (pos == buffer || *(pos-1) != '\\')) {
-                            in_string = !in_string;
-                        } else if (!in_string) {
-                            if (*pos == '{') brace_count++;
-                            else if (*pos == '}') {
-                                brace_count--;
-                                if (brace_count == 0) break; // End of elements object
-                            } else if (*pos == ',' && brace_count == 1) {
-                                elements_count++;
-                            }
-                        }
-                        pos++;
-                    }
-                    // Add 1 for the last element (no comma after last element)
-                    if (elements_count > 0) elements_count++;
-                    return elements_count;
-                }
-            }
+    // Modern manifest format uses "elements" object, legacy might be different
+    // We look for keys in the "elements" object if likely new format, or "active": true
+    
+    // Robust-ish JSON parsing for this specific file structure without full JSON parser
+    // New format (simplified view): {"elements": {"/nix/store/...": {...}, "/nix/store/...": {...}}, ...}
+    
+    int count = 0;
+    const char* elements = strstr(buffer, "\"elements\"");
+    if (elements) {
+        elements = strchr(elements, '{');
+        if (elements) {
+            // We are inside the elements object. Count keys.
+            // A primitive way: count valid Store Paths that are keys.
+            // Or simpler: count ":" that are not inside nested objects? No, too risky.
+            // Let's rely on the structure: "/nix/store/..." : { ... }
             
-            // Fallback: try old format - count "active":true entries
-            return count_strings_in_buffer(buffer, "\"active\":true");
+            const char* p = elements + 1;
+            int brace_level = 1;
+            int in_string = 0;
+            
+            while (*p) {
+                if (*p == '"' && (p == buffer || *(p-1) != '\\')) {
+                    in_string = !in_string;
+                    
+                    // If we just stared a string and we are at brace_level 1 using a comma-separation or start, it's a key
+                    // But JSON keys are followed by :
+                    
+                } else if (!in_string) {
+                    if (*p == '{') {
+                        brace_level++;
+                    } else if (*p == '}') {
+                        brace_level--;
+                        if (brace_level == 0) break; // End of elements
+                    } else if (*p == ':' && brace_level == 1) {
+                         // We found a key-value pair at level 1, which means a package entry
+                         // Verify it's not a meta-field by strictly assuming keys are store paths?
+                         // "fastfetch" filters out -doc, -info, etc. 
+                         // For now, let's just count all entries as "packages"
+                         count++;
+                    }
+                }
+                p++;
+            }
         }
+    } else {
+        // Fallback or older format
+        // Count occurences of "active": true ?
+        count = count_strings_in_buffer(buffer, "\"active\":true");
     }
     
-    // Try alternative nix profile locations
-    snprintf(profile_path, sizeof(profile_path), "/nix/var/nix/profiles/per-user/%s/profile/manifest.json", 
-             getenv("USER") ? getenv("USER") : "root");
-    if (read_file_fast(profile_path, buffer, sizeof(buffer))) {
-        return count_strings_in_buffer(buffer, "\"active\":true");
+    return count;
+}
+
+// Helper to count packages in a specific profile path
+static int get_nix_profile_count(const char* path) {
+    char buffer[BUFFER_SIZE * 16]; // Manifests can be large
+    if (read_file_fast(path, buffer, sizeof(buffer))) {
+        return count_nix_packages_in_json(buffer);
     }
-    
     return 0;
+}
+
+// Fast Nix package counting via profile manifest scanning (File-based only, NO COMMANDS)
+static int count_nix_packages(const char* strata_path) {
+    (void)strata_path; // Unused
+    int total = 0;
+    char path[512];
+    const char* home = getenv("HOME");
+    
+    // 1. User Profile (~/.nix-profile/manifest.json)
+    if (home) {
+        snprintf(path, sizeof(path), "%s/.nix-profile/manifest.json", home);
+        total += get_nix_profile_count(path);
+    }
+    
+    // 2. Default Profile
+    total += get_nix_profile_count("/nix/var/nix/profiles/default/manifest.json");
+    
+    // 3. System Profile
+    total += get_nix_profile_count("/run/current-system/sw/manifest.json");
+
+    // 4. Per-user Profile
+    const char* user = getenv("USER");
+    if (user) {
+        snprintf(path, sizeof(path), "/etc/profiles/per-user/%s/manifest.json", user);
+        total += get_nix_profile_count(path);
+    }
+
+    // 5. XDG State Profile
+    const char* xdg_state = getenv("XDG_STATE_HOME");
+    if (xdg_state) {
+        snprintf(path, sizeof(path), "%s/nix/profile/manifest.json", xdg_state);
+        total += get_nix_profile_count(path);
+    } else if (home) {
+        snprintf(path, sizeof(path), "%s/.local/state/nix/profile/manifest.json", home);
+        total += get_nix_profile_count(path);
+    }
+
+    return total;
 }
 
 // Check if stratum is a real directory (not symlink alias) like brl list does
@@ -881,7 +1185,7 @@ static void print_gentoo_fetch(const struct sysinfo_fast* info) {
     printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│"NORD1" │─────" RESET BOLD "//+++++++" NORD1 BOLD "//" NORD1 "──────────────────│\n");
     printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│"NORD1" │──────" RESET BOLD "////////" NORD1 BOLD "────────────────────│\n");
     printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│"NORD1" └──────────────────────────────────┘\n");
-    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Version: " NORD4 "%s\n", info->version);
+    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
     printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
     printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
     printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
@@ -909,7 +1213,41 @@ static void print_bedrock_fetch(const struct sysinfo_fast* info) {
     printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 BOLD " │──────────" RESET BOLD "\\\\\\               ///" NORD1 BOLD "───│\n");
     printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 BOLD " │───────────" RESET BOLD "\\\\\\////////////////" NORD1 BOLD "────│\n");
     printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 BOLD " └──────────────────────────────────┘\n");
-    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD12 "Version: " NORD4 "%s\n", info->version);
+    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
+    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
+    printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
+    printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
+    printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│ " NORD15 "Packages: " NORD4 "%s\n", info->packages);
+    printf(RESET BOLD " │" NORD11 "██" RESET BOLD "│ " NORD13 "Terminal: " NORD4 "%s\n", info->terminal);
+    printf(RESET BOLD " │" NORD12 "██" RESET BOLD "│ " NORD13 "Memory: " NORD4 "%s\n", info->memory);
+    printf(RESET BOLD " │" NORD13 "██" RESET BOLD "│ " NORD13 "Shell: " NORD4 "%s\n", info->shell);
+    printf(RESET BOLD " │" NORD14 "██" RESET BOLD "│ " NORD9 "CPU: " NORD4 "%s\n", info->cpu);
+    printf(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│ " NORD9 "GPU: " NORD4 "%s\n", info->gpu);
+    printf(RESET BOLD " └──┘" RESET "\n");
+}
+
+// Print CachyOS ASCII art
+static void print_cachyos_fetch(const struct sysinfo_fast* info) {
+    // New design provided by user
+    // Color scheme: Gray/White as requested with subtle CachyOS teal accents
+    // + : NORD4 (White)
+    // - : NORD3 (Gray)
+    // / \ : NORD7 (Teal) or NORD8 (Cyan)
+    
+    printf(RESET BOLD " ┌──┐" NORD1 BOLD " ┌──────────────────────────────────┐ " NORD11 BOLD "┌────┐\n");
+    printf(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 BOLD " │─────" NORD7 "/" NORD3 "--" NORD4 "++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "───────────│ " NORD11 BOLD "│ 境 │\n");
+    printf(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 BOLD " │────" NORD7 "//" NORD4 "+++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "─────" NORD7 "/\\\\" NORD1 BOLD "────│ " NORD11 BOLD "│    │\n");
+    printf(RESET BOLD " │" NORD1 "██" RESET BOLD "│" NORD1 BOLD " │───" NORD7 "//" NORD4 "++++++++++++++++" NORD1 BOLD "──────" NORD7 "\\//" NORD1 BOLD "────│ " NORD11 BOLD "│ 界 │\n");
+    printf(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 BOLD " │──" NORD7 "//" NORD4 "++" NORD3 "---" NORD4 "+" NORD7 "//" NORD1 BOLD "──────────────────────│ " NORD11 BOLD "└────┘\n");
+    printf(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 BOLD " │─" NORD7 "//" NORD3 "---" NORD4 "+++" NORD7 "//" NORD1 BOLD "────────────" NORD7 "/+\\\\" NORD1 BOLD "───────│\n");
+    printf(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 BOLD " │─" NORD7 "\\\\" NORD4 "++++" NORD3 "--" NORD7 "/" NORD1 BOLD "─────────────" NORD7 "\\-//" NORD1 BOLD "───────│\n");
+    printf(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 BOLD " │──" NORD7 "\\\\" NORD3 "--" NORD4 "+++" NORD7 "\\" NORD1 BOLD "──────────────────" NORD7 "/++\\\\" NORD1 BOLD "─│\n");
+    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 BOLD " │───" NORD7 "\\\\" NORD4 "+++" NORD3 "--" NORD7 "\\" NORD1 BOLD "─────────────────" NORD7 "\\--//" NORD1 BOLD "─│\n");
+    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 BOLD " │────" NORD7 "\\\\" NORD3 "--" NORD4 "++++" NORD3 "-+" NORD4 "---" NORD4 "+" NORD3 "--" NORD4 "++++++" NORD7 "/" NORD1 BOLD "───────│\n");
+    printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 BOLD " │─────" NORD7 "\\" NORD3 "--" NORD4 "+++++++++++++++" NORD3 "--" NORD7 "/" NORD1 BOLD "────────│\n");
+    printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 BOLD " │──────" NORD7 "\\" NORD3 "-" NORD4 "++++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "─────────│\n");
+    printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 BOLD " └──────────────────────────────────┘\n");
+    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
     printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
     printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
     printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
@@ -926,6 +1264,8 @@ static void print_bedrock_fetch(const struct sysinfo_fast* info) {
 static void print_fetch(const struct sysinfo_fast* info) {
     if (info->system_type == SYSTEM_GENTOO) {
         print_gentoo_fetch(info);
+    } else if (info->system_type == SYSTEM_CACHYOS) {
+        print_cachyos_fetch(info);
     } else {
         print_bedrock_fetch(info);
     }
@@ -935,10 +1275,14 @@ int main(int argc, char* argv[]) {
     struct sysinfo_fast info;
     
     // Check for command line arguments
-    int force_gentoo = 0;
+    int force_system_type = -1; // -1 for auto-detect
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--gentoo") == 0) {
-            force_gentoo = 1;
+            force_system_type = SYSTEM_GENTOO;
+        } else if (strcmp(argv[i], "--cachyos") == 0) {
+            force_system_type = SYSTEM_CACHYOS;
+        } else if (strcmp(argv[i], "--bedrock") == 0) {
+            force_system_type = SYSTEM_BEDROCK;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
             printf("bfetch version 1.1.2-cowmeed\n");
             return 0;
@@ -948,20 +1292,22 @@ int main(int argc, char* argv[]) {
             printf("Options:\n");
             printf("  -v, --version    Show version information\n");
             printf("  -h, --help       Show this help message\n");
-            printf("      --gentoo     Force Gentoo mode (works on any system)\n");
+            printf("      --gentoo     Force Gentoo mode\n");
+            printf("      --cachyos    Force CachyOS mode\n");
+            printf("      --bedrock    Force Bedrock mode\n");
             return 0;
         }
     }
     
-    // Detect system type (or force Gentoo mode)
-    if (force_gentoo) {
-        info.system_type = SYSTEM_GENTOO;
+    // Detect system type (or force mode)
+    if (force_system_type != -1) {
+        info.system_type = (system_type_t)force_system_type;
     } else {
         info.system_type = detect_system_type();
     }
     
     // Gather all system information dynamically
-    get_version(info.version);
+    get_distro(info.distro);
     get_kernel(info.kernel);
     get_uptime(info.uptime);
     get_memory(info.memory);
