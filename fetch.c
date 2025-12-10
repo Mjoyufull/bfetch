@@ -1284,7 +1284,7 @@ int main(int argc, char* argv[]) {
         } else if (strcmp(argv[i], "--bedrock") == 0) {
             force_system_type = SYSTEM_BEDROCK;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-            printf("bfetch version 1.1.2-cowmeed\n");
+            printf("bfetch version 1.2.0-ricemeat\n");
             return 0;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             printf("bfetch - Ultra-fast system information display\n");

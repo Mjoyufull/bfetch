@@ -15,7 +15,7 @@
         packages = {
           default = pkgs.stdenv.mkDerivation {
             pname = "bfetch";
-            version = "1.1.2-cowmeed";
+            version = "1.2.0-ricemeat";
 
             src = ./.;
 
