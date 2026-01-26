@@ -124,105 +124,78 @@ static void get_cpu(char* cpu) {
 }
 
 // --------------------------------------------------------------------------------
-// GPU Detection: Robust mmap-based lookup
+// GPU Detection: Fast DRM-based lookup
 // --------------------------------------------------------------------------------
 static void get_gpu(char* gpu) {
-    strcpy(gpu, "Unknown GPU");
-    DIR* dir = opendir("/sys/bus/pci/devices");
-    if (!dir) return;
-
-    const char* paths[] = {
-        "/usr/share/hwdata/pci.ids",
-        "/usr/share/misc/pci.ids",
-        "/usr/share/pciids/pci.ids",
-        "/var/lib/pciutils/pci.ids",
-        NULL
-    };
-
-    int pci_fd = -1;
+    char buf[16], path[64];
+    unsigned int vendor = 0, device = 0;
+    
+    // Scan card0-card9 to find first valid GPU
+    for (int i = 0; i < 10 && vendor == 0; i++) {
+        snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/vendor", i);
+        if (read_file_fast(path, buf, sizeof(buf))) {
+            vendor = strtoul(buf, NULL, 16);
+            snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/device", i);
+            if (read_file_fast(path, buf, sizeof(buf))) {
+                device = strtoul(buf, NULL, 16);
+            }
+        }
+    }
+    
+    if (vendor == 0) { strcpy(gpu, "Unknown GPU"); return; }
+    
+    // Open pci.ids
+    int fd = open("/usr/share/hwdata/pci.ids", O_RDONLY);
+    if (fd == -1) fd = open("/usr/share/misc/pci.ids", O_RDONLY);
+    if (fd == -1) {
+        if (vendor == 0x10de) snprintf(gpu, SMALL_BUFFER, "NVIDIA GPU 0x%04x", device);
+        else if (vendor == 0x1002) snprintf(gpu, SMALL_BUFFER, "AMD GPU 0x%04x", device);
+        else snprintf(gpu, SMALL_BUFFER, "GPU 0x%04x:0x%04x", vendor, device);
+        return;
+    }
+    
     struct stat st;
-    for (int i = 0; paths[i]; i++) {
-        pci_fd = open(paths[i], O_RDONLY);
-        if (pci_fd != -1) {
-            fstat(pci_fd, &st);
-            if (st.st_size > 0) break;
-            close(pci_fd); pci_fd = -1;
-        }
-    }
-
-    struct dirent* de;
-    unsigned int best_v = 0, best_d = 0;
-    int best_score = -1;
-
-    while ((de = readdir(dir))) {
-        if (de->d_name[0] == '.') continue;
-        char path[512], buf[16];
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", de->d_name);
-        if (!read_file_fast(path, buf, sizeof(buf))) continue;
-        unsigned int class_code = strtoul(buf, NULL, 16);
-        if ((class_code >> 16) != 0x03) continue;
-
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", de->d_name);
-        read_file_fast(path, buf, sizeof(buf));
-        unsigned int v = strtoul(buf, NULL, 16);
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/device", de->d_name);
-        read_file_fast(path, buf, sizeof(buf));
-        unsigned int d = strtoul(buf, NULL, 16);
-
-        int score = 0;
-        if (v == 0x10de) score = 100;
-        else if (v == 0x1002 || v == 0x1022) score = 90;
-        else if (v == 0x8086) score = 10;
-        if (score > best_score) {
-            best_score = score; best_v = v; best_d = d;
-        }
-    }
-    closedir(dir);
-
-    if (best_score != -1 && pci_fd != -1) {
-        char* map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, pci_fd, 0);
-        if (map != MAP_FAILED) {
-            char v_search[8], d_search[12];
-            snprintf(v_search, sizeof(v_search), "\n%04x", best_v);
-            const char* v_line = memmem(map, st.st_size, v_search, 5);
-            if (v_line) {
-                v_line++; // Skip \n
-                const char* v_name_start = v_line + 4;
-                while (*v_name_start == ' ' || *v_name_start == '\t') v_name_start++;
-                const char* v_end = strchr(v_name_start, '\n');
-                if (v_end) {
-                    char v_name[64] = {0};
-                    size_t v_len = v_end - v_name_start;
-                    if (v_len > 63) v_len = 63;
-                    memcpy(v_name, v_name_start, v_len);
-                    if (strstr(v_name, " Corporation")) *strstr(v_name, " Corporation") = '\0';
-                    
-                    snprintf(d_search, sizeof(d_search), "\n\t%04x", best_d);
-                    const char* d_line = memmem(v_end, st.st_size - (v_end - map), d_search, 6);
-                    if (d_line) {
-                        const char* d_name_start = d_line + 6;
-                        while (*d_name_start == ' ' || *d_name_start == '\t') d_name_start++;
-                        const char* d_end = strchr(d_name_start, '\n');
-                        const char* br_open = strchr(d_name_start, '[');
-                        if (br_open && br_open < d_end) {
-                            const char* br_close = strchr(br_open, ']');
-                            if (br_close && br_close < d_end) { d_name_start = br_open + 1; d_end = br_close; }
-                        }
-                        if (d_end) {
-                            char d_name[128] = {0};
-                            size_t d_len = d_end - d_name_start;
-                            if (d_len > 127) d_len = 127;
-                            memcpy(d_name, d_name_start, d_len);
-                            snprintf(gpu, SMALL_BUFFER, "%s %s", (best_v == 0x10de) ? "NVIDIA" : (best_v == 0x1002 || best_v == 0x1022) ? "AMD" : v_name, d_name);
-                        }
-                    }
+    fstat(fd, &st);
+    char* map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (map == MAP_FAILED) { strcpy(gpu, "Unknown GPU"); return; }
+    
+    char v_search[8];
+    snprintf(v_search, sizeof(v_search), "\n%04x", vendor);
+    const char* v_line = memmem(map, st.st_size, v_search, 5);
+    if (v_line) {
+        v_line++;
+        const char* v_end = strchr(v_line + 4, '\n');
+        if (v_end) {
+            char d_search[12];
+            snprintf(d_search, sizeof(d_search), "\n\t%04x", device);
+            const char* d_line = memmem(v_end, st.st_size - (v_end - map), d_search, 6);
+            if (d_line) {
+                const char* d_name = d_line + 6;
+                while (*d_name == ' ' || *d_name == '\t') d_name++;
+                const char* d_end = strchr(d_name, '\n');
+                const char* br = strchr(d_name, '[');
+                if (br && br < d_end) {
+                    const char* br_end = strchr(br, ']');
+                    if (br_end && br_end < d_end) { d_name = br + 1; d_end = br_end; }
+                }
+                if (d_end) {
+                    size_t len = d_end - d_name;
+                    if (len > 120) len = 120;
+                    const char* prefix = (vendor == 0x10de) ? "NVIDIA " : (vendor == 0x1002) ? "AMD " : "";
+                    snprintf(gpu, SMALL_BUFFER, "%s%.*s", prefix, (int)len, d_name);
+                    munmap(map, st.st_size);
+                    return;
                 }
             }
-            munmap(map, st.st_size);
         }
     }
-    if (pci_fd != -1) close(pci_fd);
+    munmap(map, st.st_size);
+    if (vendor == 0x10de) strcpy(gpu, "NVIDIA GPU");
+    else if (vendor == 0x1002) strcpy(gpu, "AMD GPU");
+    else strcpy(gpu, "Unknown GPU");
 }
+
 
 // --------------------------------------------------------------------------------
 // Terminal Detection: readlink (Fastest)
@@ -345,20 +318,26 @@ static void get_packages(char* packages, system_type_t system_type) {
     if (off > 2) { res[off - 2] = '\0'; strcpy(packages, res); } else strcpy(packages, "Unknown");
 }
 
-// --------------------------------------------------------------------------------
-// System Info Gathering
-// --------------------------------------------------------------------------------
-
-static void get_distro(char* distro) {
+// COMBINED: Reads /etc/os-release ONCE, sets both distro and system_type
+static system_type_t get_distro_and_type(char* distro) {
     char buf[1024];
+    system_type_t type = SYSTEM_OTHER;
+    
     if (read_file_fast("/etc/os-release", buf, sizeof(buf))) {
         char* p = strstr(buf, "PRETTY_NAME=\"");
         if (p) {
-            p += 13; char* end = strchr(p, '"');
-            if (end) { *end = 0; strcpy(distro, p); return; }
+            p += 13;
+            char* end = strchr(p, '"');
+            if (end) { *end = 0; strcpy(distro, p); }
         }
+        if (strcasestr(buf, "cachyos")) type = SYSTEM_CACHYOS;
+        else if (strcasestr(buf, "gentoo")) type = SYSTEM_GENTOO;
+        else if (strcasestr(buf, "bedrock")) type = SYSTEM_BEDROCK;
     }
-    strcpy(distro, "Linux");
+    
+    if (type == SYSTEM_OTHER && access("/bedrock", F_OK) == 0) type = SYSTEM_BEDROCK;
+    if (distro[0] == '\0') strcpy(distro, "Linux");
+    return type;
 }
 
 static void get_kernel(char* kernel) {
@@ -368,20 +347,25 @@ static void get_kernel(char* kernel) {
 }
 
 static void get_uptime(char* uptime) {
-    struct sysinfo s;
-    if (sysinfo(&s) == 0) {
-        long m = s.uptime / 60, h = m / 60, d = h / 24;
+    char buf[64];
+    if (read_file_fast("/proc/uptime", buf, sizeof(buf))) {
+        unsigned long secs = strtoul(buf, NULL, 10);
+        long m = secs / 60, h = m / 60, d = h / 24;
         if (d > 0) snprintf(uptime, SMALL_BUFFER, "%ldd %ldh %ldm", d, h % 24, m % 60);
         else snprintf(uptime, SMALL_BUFFER, "%ldh %ldm", h, m % 60);
     } else strcpy(uptime, "Unknown");
 }
 
 static void get_memory(char* memory) {
-    struct sysinfo s;
-    if (sysinfo(&s) == 0) {
-        unsigned long t = s.totalram * s.mem_unit, f = s.freeram * s.mem_unit;
-        unsigned long u = t - f - (s.bufferram * s.mem_unit) - (s.sharedram * s.mem_unit);
-        snprintf(memory, SMALL_BUFFER, "%.2f GiB / %.2f GiB", (double)u / 1073741824, (double)t / 1073741824);
+    char buf[2048];
+    if (read_file_fast("/proc/meminfo", buf, sizeof(buf))) {
+        unsigned long long total = 0, available = 0;
+        char* p = strstr(buf, "MemTotal:");
+        if (p) { p += 9; while (*p == ' ') p++; total = strtoull(p, NULL, 10); }
+        p = strstr(buf, "MemAvailable:");
+        if (p) { p += 13; while (*p == ' ') p++; available = strtoull(p, NULL, 10); }
+        unsigned long long used = total - available;
+        snprintf(memory, SMALL_BUFFER, "%.2f GiB / %.2f GiB", (double)used / 1048576.0, (double)total / 1048576.0);
     } else strcpy(memory, "Unknown");
 }
 
@@ -391,102 +375,94 @@ static void get_wm(char* wm) {
     if (v) strcpy(wm, v); else strcpy(wm, "Unknown");
 }
 
-static system_type_t detect_system_type() {
-    char buf[1024];
-    if (read_file_fast("/etc/os-release", buf, sizeof(buf))) {
-        if (strcasestr(buf, "cachyos")) return SYSTEM_CACHYOS;
-        if (strcasestr(buf, "gentoo")) return SYSTEM_GENTOO;
-    }
-    if (access("/etc/cachyos-release", F_OK) == 0) return SYSTEM_CACHYOS;
-    if (access("/etc/gentoo-release", F_OK) == 0) return SYSTEM_GENTOO;
-    if (access("/bedrock", F_OK) == 0) return SYSTEM_BEDROCK;
-    return SYSTEM_OTHER;
-}
 
-// --------------------------------------------------------------------------------
-// ASCII ART (PRESERVED)
-// --------------------------------------------------------------------------------
+// Buffered output builder
+#define OUTPUT_BUFFER 16384
+static char g_out[OUTPUT_BUFFER];
+static int g_off = 0;
+
+#define OUT(...) g_off += snprintf(g_out + g_off, OUTPUT_BUFFER - g_off, __VA_ARGS__)
 
 static void print_gentoo_fetch(const struct sysinfo_fast* info) {
-    printf(RESET BOLD " ┌──┐" NORD1 " ┌──────────────────────────────────┐ " NORD15 BOLD "┌─────┐\n");
-    printf(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 " │─────────" RESET BOLD "\\\\\\\\\\\\\\\\\\\\" NORD1 "────────────────│ " NORD15 BOLD "│  G  │\n");
-    printf(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 " │───────" RESET BOLD "//+++++++++++\\" NORD1 BOLD "─────────────│ " NORD15 BOLD "│  a  │\n");
-    printf(RESET BOLD " │" NORD1 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "//+++++" NORD1 BOLD "\\\\\\" RESET BOLD "+++++\\" NORD1 BOLD "────────────│ " NORD15 BOLD "│  n  │\n");
-    printf(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//+++++" NORD1 BOLD "// " RESET BOLD "/" RESET BOLD "+++++++\\" NORD1 BOLD "──────────│ " NORD15 BOLD "│  y  │\n");
-    printf(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "+++++++" NORD1 BOLD "\\\\" RESET BOLD "++++++++++\\" NORD1 BOLD "────────│ " NORD15 BOLD "│  m  │\n");
-    printf(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 " │────────" RESET BOLD "++++++++++++++++++" NORD1 BOLD "\\\\" NORD1 "──────│ " NORD15 BOLD "│  e  │\n");
-    printf(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 " │─────────" RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "───────│ " NORD15 BOLD "│  d  │\n");
-    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 " │───────" RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "─────────│ " NORD15 BOLD "│  e  │\n");
-    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 " │──── " RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "───────────│ " NORD15 BOLD "└─────┘\n");
-    printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//++++++++++" NORD1 BOLD "//" NORD1 "───────────────│\n");
-    printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//+++++++" NORD1 BOLD "//" NORD1 "──────────────────│\n");
-    printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "////////" NORD1 BOLD "────────────────────│\n");
-    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 " └──────────────────────────────────┘\n");
-    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
-    printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
-    printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
-    printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
-    printf(RESET BOLD " │" NORD11 "██" RESET BOLD "│ " NORD15 "Packages: " NORD4 "%s\n", info->packages);
-    printf(RESET BOLD " │" NORD12 "██" RESET BOLD "│ " NORD13 "Terminal: " NORD4 "%s\n", info->terminal);
-    printf(RESET BOLD " │" NORD13 "██" RESET BOLD "│ " NORD13 "Memory: " NORD4 "%s\n", info->memory);
-    printf(RESET BOLD " │" NORD14 "██" RESET BOLD "│ " NORD13 "Shell: " NORD4 "%s\n", info->shell);
-    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD9 "CPU: " NORD4 "%s\n", info->cpu);
-    printf(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│ " NORD9 "GPU: " NORD4 "%s\n", info->gpu);
-    printf(RESET BOLD " └──┘" RESET "\n");
+    OUT(RESET BOLD " ┌──┐" NORD1 " ┌──────────────────────────────────┐ " NORD15 BOLD "┌─────┐\n");
+    OUT(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 " │─────────" RESET BOLD "\\\\\\\\\\\\\\\\\\\\" NORD1 "────────────────│ " NORD15 BOLD "│  G  │\n");
+    OUT(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 " │───────" RESET BOLD "//+++++++++++\\" NORD1 BOLD "─────────────│ " NORD15 BOLD "│  a  │\n");
+    OUT(RESET BOLD " │" NORD1 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "//+++++" NORD1 BOLD "\\\\\\" RESET BOLD "+++++\\" NORD1 BOLD "────────────│ " NORD15 BOLD "│  n  │\n");
+    OUT(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//+++++" NORD1 BOLD "// " RESET BOLD "/" RESET BOLD "+++++++\\" NORD1 BOLD "──────────│ " NORD15 BOLD "│  y  │\n");
+    OUT(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "+++++++" NORD1 BOLD "\\\\" RESET BOLD "++++++++++\\" NORD1 BOLD "────────│ " NORD15 BOLD "│  m  │\n");
+    OUT(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 " │────────" RESET BOLD "++++++++++++++++++" NORD1 BOLD "\\\\" NORD1 "──────│ " NORD15 BOLD "│  e  │\n");
+    OUT(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 " │─────────" RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "───────│ " NORD15 BOLD "│  d  │\n");
+    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 " │───────" RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "─────────│ " NORD15 BOLD "│  e  │\n");
+    OUT(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 " │──── " RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "───────────│ " NORD15 BOLD "└─────┘\n");
+    OUT(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//++++++++++" NORD1 BOLD "//" NORD1 "───────────────│\n");
+    OUT(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//+++++++" NORD1 BOLD "//" NORD1 "──────────────────│\n");
+    OUT(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "////////" NORD1 BOLD "────────────────────│\n");
+    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 " └──────────────────────────────────┘\n");
+    OUT(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
+    OUT(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
+    OUT(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
+    OUT(RESET BOLD " │" NORD15 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
+    OUT(RESET BOLD " │" NORD11 "██" RESET BOLD "│ " NORD15 "Packages: " NORD4 "%s\n", info->packages);
+    OUT(RESET BOLD " │" NORD12 "██" RESET BOLD "│ " NORD13 "Terminal: " NORD4 "%s\n", info->terminal);
+    OUT(RESET BOLD " │" NORD13 "██" RESET BOLD "│ " NORD13 "Memory: " NORD4 "%s\n", info->memory);
+    OUT(RESET BOLD " │" NORD14 "██" RESET BOLD "│ " NORD13 "Shell: " NORD4 "%s\n", info->shell);
+    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD9 "CPU: " NORD4 "%s\n", info->cpu);
+    OUT(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│ " NORD9 "GPU: " NORD4 "%s\n", info->gpu);
+    OUT(RESET BOLD " └──┘" RESET "\n");
 }
 
 static void print_bedrock_fetch(const struct sysinfo_fast* info) {
-    printf(RESET BOLD " ┌──┐" NORD1 BOLD " ┌──────────────────────────────────┐ " NORD11 BOLD "┌────┐\n");
-    printf(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 BOLD " │─" RESET BOLD "\\\\\\\\\\\\\\\\\\\\\\\\\\" NORD1 BOLD "────────────────────│ " NORD11 BOLD "│ 境 │\n");
-    printf(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 BOLD " │──" RESET BOLD "\\\\\\      \\\\\\" NORD1 BOLD "────────────────────│ " NORD11 BOLD "│    │\n");
-    printf(RESET BOLD " │" NORD1 "██" RESET BOLD "│" NORD1 BOLD " │───" RESET BOLD "\\\\\\      \\\\\\" NORD1 BOLD "───────────────────│ " NORD11 BOLD "│ 界 │\n");
-    printf(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 BOLD " │────" RESET BOLD "\\\\\\      \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\" NORD1 BOLD "────│ " NORD11 BOLD "└────┘\n");
-    printf(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 BOLD " │─────" RESET BOLD "\\\\\\                    \\\\\\" NORD1 BOLD "───│\n");
-    printf(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 BOLD " │──────" RESET BOLD "\\\\\\                    \\\\\\" NORD1 BOLD "──│\n");
-    printf(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 BOLD " │───────" RESET BOLD "\\\\\\        ──────      \\\\\\" NORD1 BOLD "─│\n");
-    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 BOLD " │────────" RESET BOLD "\\\\\\                   ///" NORD1 BOLD "─│\n");
-    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 BOLD " │─────────" RESET BOLD "\\\\\\                 ///" NORD1 BOLD "──│\n");
-    printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 BOLD " │──────────" RESET BOLD "\\\\\\               ///" NORD1 BOLD "───│\n");
-    printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 BOLD " │───────────" RESET BOLD "\\\\\\////////////////" NORD1 BOLD "────│\n");
-    printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 BOLD " └──────────────────────────────────┘\n");
-    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
-    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
-    printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
-    printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
-    printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│ " NORD15 "Packages: " NORD4 "%s\n", info->packages);
-    printf(RESET BOLD " │" NORD11 "██" RESET BOLD "│ " NORD13 "Terminal: " NORD4 "%s\n", info->terminal);
-    printf(RESET BOLD " │" NORD12 "██" RESET BOLD "│ " NORD13 "Memory: " NORD4 "%s\n", info->memory);
-    printf(RESET BOLD " │" NORD13 "██" RESET BOLD "│ " NORD13 "Shell: " NORD4 "%s\n", info->shell);
-    printf(RESET BOLD " │" NORD14 "██" RESET BOLD "│ " NORD9 "CPU: " NORD4 "%s\n", info->cpu);
-    printf(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│ " NORD9 "GPU: " NORD4 "%s\n", info->gpu);
-    printf(RESET BOLD " └──┘" RESET "\n");
+    OUT(RESET BOLD " ┌──┐" NORD1 BOLD " ┌──────────────────────────────────┐ " NORD11 BOLD "┌────┐\n");
+    OUT(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 BOLD " │─" RESET BOLD "\\\\\\\\\\\\\\\\\\\\\\\\\\" NORD1 BOLD "────────────────────│ " NORD11 BOLD "│ 境 │\n");
+    OUT(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 BOLD " │──" RESET BOLD "\\\\\\      \\\\\\" NORD1 BOLD "────────────────────│ " NORD11 BOLD "│    │\n");
+    OUT(RESET BOLD " │" NORD1 "██" RESET BOLD "│" NORD1 BOLD " │───" RESET BOLD "\\\\\\      \\\\\\" NORD1 BOLD "───────────────────│ " NORD11 BOLD "│ 界 │\n");
+    OUT(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 BOLD " │────" RESET BOLD "\\\\\\      \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\" NORD1 BOLD "────│ " NORD11 BOLD "└────┘\n");
+    OUT(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 BOLD " │─────" RESET BOLD "\\\\\\                    \\\\\\" NORD1 BOLD "───│\n");
+    OUT(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 BOLD " │──────" RESET BOLD "\\\\\\                    \\\\\\" NORD1 BOLD "──│\n");
+    OUT(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 BOLD " │───────" RESET BOLD "\\\\\\        ──────      \\\\\\" NORD1 BOLD "─│\n");
+    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 BOLD " │────────" RESET BOLD "\\\\\\                   ///" NORD1 BOLD "─│\n");
+    OUT(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 BOLD " │─────────" RESET BOLD "\\\\\\                 ///" NORD1 BOLD "──│\n");
+    OUT(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 BOLD " │──────────" RESET BOLD "\\\\\\               ///" NORD1 BOLD "───│\n");
+    OUT(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 BOLD " │───────────" RESET BOLD "\\\\\\////////////////" NORD1 BOLD "────│\n");
+    OUT(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 BOLD " └──────────────────────────────────┘\n");
+    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
+    OUT(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
+    OUT(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
+    OUT(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
+    OUT(RESET BOLD " │" NORD15 "██" RESET BOLD "│ " NORD15 "Packages: " NORD4 "%s\n", info->packages);
+    OUT(RESET BOLD " │" NORD11 "██" RESET BOLD "│ " NORD13 "Terminal: " NORD4 "%s\n", info->terminal);
+    OUT(RESET BOLD " │" NORD12 "██" RESET BOLD "│ " NORD13 "Memory: " NORD4 "%s\n", info->memory);
+    OUT(RESET BOLD " │" NORD13 "██" RESET BOLD "│ " NORD13 "Shell: " NORD4 "%s\n", info->shell);
+    OUT(RESET BOLD " │" NORD14 "██" RESET BOLD "│ " NORD9 "CPU: " NORD4 "%s\n", info->cpu);
+    OUT(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│ " NORD9 "GPU: " NORD4 "%s\n", info->gpu);
+    OUT(RESET BOLD " └──┘" RESET "\n");
 }
 
 static void print_cachyos_fetch(const struct sysinfo_fast* info) {
-    printf(RESET BOLD " ┌──┐" NORD1 BOLD " ┌──────────────────────────────────┐ " NORD11 BOLD "┌────┐\n");
-    printf(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 BOLD " │─────" NORD7 "/" NORD3 "--" NORD4 "++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "───────────│ " NORD11 BOLD "│ 境 │\n");
-    printf(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 BOLD " │────" NORD7 "//" NORD4 "+++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "─────" NORD7 "/\\\\" NORD1 BOLD "────│ " NORD11 BOLD "│    │\n");
-    printf(RESET BOLD " │" NORD1 "██" RESET BOLD "│" NORD1 BOLD " │───" NORD7 "//" NORD4 "++++++++++++++++" NORD1 BOLD "──────" NORD7 "\\//" NORD1 BOLD "────│ " NORD11 BOLD "│ 界 │\n");
-    printf(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 BOLD " │──" NORD7 "//" NORD4 "++" NORD3 "---" NORD4 "+" NORD7 "//" NORD1 BOLD "──────────────────────│ " NORD11 BOLD "└────┘\n");
-    printf(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 BOLD " │─" NORD7 "//" NORD3 "---" NORD4 "+++" NORD7 "//" NORD1 BOLD "────────────" NORD7 "/+\\\\" NORD1 BOLD "───────│\n");
-    printf(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 BOLD " │─" NORD7 "\\\\" NORD4 "++++" NORD3 "--" NORD7 "/" NORD1 BOLD "─────────────" NORD7 "\\-//" NORD1 BOLD "───────│\n");
-    printf(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 BOLD " │──" NORD7 "\\\\" NORD3 "--" NORD4 "+++" NORD7 "\\" NORD1 BOLD "──────────────────" NORD7 "/++\\\\" NORD1 BOLD "─│\n");
-    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 BOLD " │───" NORD7 "\\\\" NORD4 "+++" NORD3 "--" NORD7 "\\" NORD1 BOLD "─────────────────" NORD7 "\\--//" NORD1 BOLD "─│\n");
-    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 BOLD " │────" NORD7 "\\\\" NORD3 "--" NORD4 "++++" NORD3 "-+" NORD4 "---" NORD4 "+" NORD3 "--" NORD4 "++++++" NORD7 "/" NORD1 BOLD "───────│\n");
-    printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 BOLD " │─────" NORD7 "\\" NORD3 "--" NORD4 "+++++++++++++++" NORD3 "--" NORD7 "/" NORD1 BOLD "────────│\n");
-    printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 BOLD " │──────" NORD7 "\\" NORD3 "-" NORD4 "++++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "─────────│\n");
-    printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 BOLD " └──────────────────────────────────┘\n");
-    printf(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
-    printf(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
-    printf(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
-    printf(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
-    printf(RESET BOLD " │" NORD15 "██" RESET BOLD "│ " NORD15 "Packages: " NORD4 "%s\n", info->packages);
-    printf(RESET BOLD " │" NORD11 "██" RESET BOLD "│ " NORD13 "Terminal: " NORD4 "%s\n", info->terminal);
-    printf(RESET BOLD " │" NORD12 "██" RESET BOLD "│ " NORD13 "Memory: " NORD4 "%s\n", info->memory);
-    printf(RESET BOLD " │" NORD13 "██" RESET BOLD "│ " NORD13 "Shell: " NORD4 "%s\n", info->shell);
-    printf(RESET BOLD " │" NORD14 "██" RESET BOLD "│ " NORD9 "CPU: " NORD4 "%s\n", info->cpu);
-    printf(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│ " NORD9 "GPU: " NORD4 "%s\n", info->gpu);
-    printf(RESET BOLD " └──┘" RESET "\n");
+    OUT(RESET BOLD " ┌──┐" NORD1 BOLD " ┌──────────────────────────────────┐ " NORD11 BOLD "┌────┐\n");
+    OUT(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 BOLD " │─────" NORD7 "/" NORD3 "--" NORD4 "++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "───────────│ " NORD11 BOLD "│ 境 │\n");
+    OUT(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 BOLD " │────" NORD7 "//" NORD4 "+++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "─────" NORD7 "/\\\\" NORD1 BOLD "────│ " NORD11 BOLD "│    │\n");
+    OUT(RESET BOLD " │" NORD1 "██" RESET BOLD "│" NORD1 BOLD " │───" NORD7 "//" NORD4 "++++++++++++++++" NORD1 BOLD "──────" NORD7 "\\//" NORD1 BOLD "────│ " NORD11 BOLD "│ 界 │\n");
+    OUT(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 BOLD " │──" NORD7 "//" NORD4 "++" NORD3 "---" NORD4 "+" NORD7 "//" NORD1 BOLD "──────────────────────│ " NORD11 BOLD "└────┘\n");
+    OUT(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 BOLD " │─" NORD7 "//" NORD3 "---" NORD4 "+++" NORD7 "//" NORD1 BOLD "────────────" NORD7 "/+\\\\" NORD1 BOLD "───────│\n");
+    OUT(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 BOLD " │─" NORD7 "\\\\" NORD4 "++++" NORD3 "--" NORD7 "/" NORD1 BOLD "─────────────" NORD7 "\\-//" NORD1 BOLD "───────│\n");
+    OUT(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 BOLD " │──" NORD7 "\\\\" NORD3 "--" NORD4 "+++" NORD7 "\\" NORD1 BOLD "──────────────────" NORD7 "/++\\\\" NORD1 BOLD "─│\n");
+    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 BOLD " │───" NORD7 "\\\\" NORD4 "+++" NORD3 "--" NORD7 "\\" NORD1 BOLD "─────────────────" NORD7 "\\--//" NORD1 BOLD "─│\n");
+    OUT(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 BOLD " │────" NORD7 "\\\\" NORD3 "--" NORD4 "++++" NORD3 "-+" NORD4 "---" NORD4 "+" NORD3 "--" NORD4 "++++++" NORD7 "/" NORD1 BOLD "───────│\n");
+    OUT(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 BOLD " │─────" NORD7 "\\" NORD3 "--" NORD4 "+++++++++++++++" NORD3 "--" NORD7 "/" NORD1 BOLD "────────│\n");
+    OUT(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 BOLD " │──────" NORD7 "\\" NORD3 "-" NORD4 "++++++++++++" NORD3 "----" NORD7 "/" NORD1 BOLD "─────────│\n");
+    OUT(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 BOLD " └──────────────────────────────────┘\n");
+    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│ " NORD12 "Distro: " NORD4 "%s\n", info->distro);
+    OUT(RESET BOLD " │" NORD8 "██" RESET BOLD "│ " NORD12 "Kernel: " NORD4 "%s\n", info->kernel);
+    OUT(RESET BOLD " │" NORD9 "██" RESET BOLD "│ " NORD15 "Uptime: " NORD4 "%s\n", info->uptime);
+    OUT(RESET BOLD " │" NORD10 "██" RESET BOLD "│ " NORD15 "WM: " NORD4 "%s\n", info->wm);
+    OUT(RESET BOLD " │" NORD15 "██" RESET BOLD "│ " NORD15 "Packages: " NORD4 "%s\n", info->packages);
+    OUT(RESET BOLD " │" NORD11 "██" RESET BOLD "│ " NORD13 "Terminal: " NORD4 "%s\n", info->terminal);
+    OUT(RESET BOLD " │" NORD12 "██" RESET BOLD "│ " NORD13 "Memory: " NORD4 "%s\n", info->memory);
+    OUT(RESET BOLD " │" NORD13 "██" RESET BOLD "│ " NORD13 "Shell: " NORD4 "%s\n", info->shell);
+    OUT(RESET BOLD " │" NORD14 "██" RESET BOLD "│ " NORD9 "CPU: " NORD4 "%s\n", info->cpu);
+    OUT(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│ " NORD9 "GPU: " NORD4 "%s\n", info->gpu);
+    OUT(RESET BOLD " └──┘" RESET "\n");
 }
 
 static void print_fetch(const struct sysinfo_fast* info) {
@@ -496,14 +472,14 @@ static void print_fetch(const struct sysinfo_fast* info) {
 }
 
 int main(int argc, char* argv[]) {
-    struct sysinfo_fast info;
+    struct sysinfo_fast info = {0};
     int force_type = -1;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--gentoo") == 0) force_type = SYSTEM_GENTOO;
         else if (strcmp(argv[i], "--cachyos") == 0) force_type = SYSTEM_CACHYOS;
         else if (strcmp(argv[i], "--bedrock") == 0) force_type = SYSTEM_BEDROCK;
         else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-            printf("bfetch version 2.3.6.9-boltnott\n"); return 0;
+            printf("bfetch version 2.4.0-fastasf\n"); return 0;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "--Help") == 0) {
             printf("Usage: %s [OPTIONS]\n", argv[0]);
             printf("Options:\n");
@@ -515,9 +491,13 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
-    info.system_type = (force_type != -1) ? (system_type_t)force_type : detect_system_type();
     
-    get_distro(info.distro);
+    // Combined distro + system type (single file read)
+    info.system_type = (force_type != -1) ? (system_type_t)force_type : get_distro_and_type(info.distro);
+    if (force_type != -1 && info.distro[0] == '\0') {
+        get_distro_and_type(info.distro);
+    }
+    
     get_kernel(info.kernel);
     get_uptime(info.uptime);
     get_memory(info.memory);
@@ -532,5 +512,10 @@ int main(int argc, char* argv[]) {
     else strcpy(info.shell, "Unknown");
 
     print_fetch(&info);
+    
+    // Single write syscall
+    write(STDOUT_FILENO, g_out, g_off);
+    
     return 0;
 }
+

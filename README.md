@@ -6,37 +6,45 @@ A lightweight, ultra-optimized system fetch tool written in C.
 
 ## Features
 
-- **Blazing Performance**: Execution time is typically **~1.5ms to 2.2ms** (up to 55x faster than fastfetch).
-- **CPUID Implementation**: Zero-allocation CPU detection using **inline assembly** (`cpuid`).
-- **High-Speed GPU Detection**: Uses `mmap` with substring scanning on the PCI ID database for instant vendor/model identification.
+- **Blazing Performance**: Execution time is typically **~2ms** (up to 55x faster than fastfetch).
+- **Accurate Memory**: Directly parses `/proc/meminfo` to calculate available memory correctly, excluding cache.
+- **Instant GPU Detection**: Scans `/sys/class/drm` for cards instead of traversing the entire PCI bus, using `mmap` for instant model lookup.
+- **Buffered Output**: Builds the entire output in memory and flushes with a single `write()` syscall.
 - **Universal Package Counting**:
-  - **Nix**: Deep manifest scanning across all profiles (Home Manager, Profiles, Channels, nix-env).
+  - **Nix**: Deep manifest scanning via `mmap` substring search.
   - **Pacman**: Optimized directory entry counting.
-  - **DPKG**: High-speed directory entry scanning.
   - **Flatpak & Snap**: Native filesystem-based counting.
-- **Zero-Copy Architecture**: Minimal memory allocations and no subprocess spawning (`popen`/`exec`).
+- **Zero-Copy Architecture**: Minimal memory allocations and no subprocess spawning.
 - **Aesthetic**: Custom professional ASCII art for **CachyOS**, **Gentoo**, and **Bedrock Linux**.
-
 
 ## Usage
 
 ```bash
-# Auto-detect system and run
+# Build (defaults to fast mode)
+make
+
+# Run
 ./bfetch
 
-# Force specific ASCII art/mode
-./bfetch --cachyos   # CachyOS mode (Teal/Gray theme)
-./bfetch --gentoo    # Gentoo mode (Purple/White theme)
-./bfetch --bedrock   # Bedrock Linux mode (Default)
+# Show Help
+./bfetch --Help
 ```
 
 ## Comparisons
 
-| Tool | Approx. Time | Approach |
-|------|-------------|----------|
-| **bfetch** | **~0.002s** | Direct C syscalls |
-| fastfetch | ~0.01-0.10s | Optimized C |
-| neofetch | ~0.20-1.00s | Shell script |
+| Tool       | Approx. Time | Approach                          |
+| ---------- | ------------ | --------------------------------- |
+| **bfetch** | **~0.002s**  | **ASM + DRM Lookup + Direct I/O** |
+| fastfetch  | ~0.10s       | Optimized C / libpci              |
+| neofetch   | ~0.80s       | Shell script                      |
+
+## Technical Implementation
+
+- **CPU**: Uses `cpuid` inline assembly to fetch the processor brand string.
+- **GPU**: Direct `/sys/class/drm/card*` lookup to identifying vendor/device IDs, then memory-maps `pci.ids` for model name resolution.
+- **Memory**: Parses `/proc/meminfo` to calculate `Used = Total - Available` without `sysinfo()` syscall overhead.
+- **I/O**: Combined `/etc/os-release` read for both distro name and system type detection.
+- **Packages**: optimized recursive directory counting and memory-mapped manifest scanning.
 
 ## Installation
 
@@ -45,11 +53,7 @@ A lightweight, ultra-optimized system fetch tool written in C.
 ```bash
 git clone https://github.com/Mjoyufull/bfetch.git
 cd bfetch
-
-# Standard build (GCC with optimizations)
 make
-
-# Run
 ./bfetch
 ```
 

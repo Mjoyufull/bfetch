@@ -10,10 +10,11 @@ AGGRESSIVE_FLAGS = -Ofast -march=native -mtune=native -flto -funroll-loops -finl
 
 .PHONY: all clean fast install
 
-all: $(TARGET)
+all: fast
 
 $(TARGET): $(SOURCE)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCE)
+	$(CC) $(AGGRESSIVE_FLAGS) -o $(TARGET) $(SOURCE)
+	strip --strip-all $(TARGET)
 
 # Maximum speed build (use this one!)
 fast: $(SOURCE)
