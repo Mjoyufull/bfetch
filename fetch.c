@@ -105,9 +105,13 @@ static void get_cpu(char* cpu) {
         brand[48] = '\0';
         char* s = brand;
         while (*s == ' ') s++;
-        char* d = cpu;
+        
+        // Clean up brand string (remove speed info and extra spaces)
+        char clean_brand[SMALL_BUFFER];
+        char* d = clean_brand;
         int space = 0;
-        while (*s && (d - cpu) < SMALL_BUFFER - 1) {
+        while (*s && (d - clean_brand) < SMALL_BUFFER - 64) {
+             if (*s == '@') break; // Stop at @ to add our own speed
              if (*s == ' ') {
                  if (!space) { *d++ = ' '; space = 1; }
              } else {
@@ -116,8 +120,24 @@ static void get_cpu(char* cpu) {
              }
              s++;
         }
-        if (d > cpu && *(d-1) == ' ') d--;
+        if (d > clean_brand && *(d-1) == ' ') d--;
         *d = '\0';
+
+        // Get thread count
+        int threads = get_nprocs();
+
+        // Get frequency from sysfs (fastest)
+        double ghz = 0.0;
+        char freq_buf[32];
+        if (read_file_fast("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", freq_buf, sizeof(freq_buf))) {
+            ghz = strtod(freq_buf, NULL) / 1000000.0;
+        }
+
+        if (ghz > 0.1) {
+            snprintf(cpu, SMALL_BUFFER, "%s (%d) @ %.2f GHz", clean_brand, threads, ghz);
+        } else {
+            snprintf(cpu, SMALL_BUFFER, "%s (%d)", clean_brand, threads);
+        }
     } else {
         strcpy(cpu, "Unknown Processor");
     }
@@ -128,7 +148,7 @@ static void get_cpu(char* cpu) {
 // --------------------------------------------------------------------------------
 static void get_gpu(char* gpu) {
     char buf[16], path[64];
-    unsigned int vendor = 0, device = 0;
+    unsigned int vendor = 0, device = 0, sub_vendor = 0, sub_device = 0;
     
     // Scan card0-card9 to find first valid GPU
     for (int i = 0; i < 10 && vendor == 0; i++) {
@@ -139,6 +159,11 @@ static void get_gpu(char* gpu) {
             if (read_file_fast(path, buf, sizeof(buf))) {
                 device = strtoul(buf, NULL, 16);
             }
+            // Attempt to get subsystem IDs for more specific naming
+            snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/subsystem_vendor", i);
+            if (read_file_fast(path, buf, sizeof(buf))) sub_vendor = strtoul(buf, NULL, 16);
+            snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/subsystem_device", i);
+            if (read_file_fast(path, buf, sizeof(buf))) sub_device = strtoul(buf, NULL, 16);
         }
     }
     
@@ -174,6 +199,20 @@ static void get_gpu(char* gpu) {
                 const char* d_name = d_line + 6;
                 while (*d_name == ' ' || *d_name == '\t') d_name++;
                 const char* d_end = strchr(d_name, '\n');
+
+                // If we have subsystem info, try to find the specific manufacturer name
+                if (sub_vendor && sub_device) {
+                    char s_search[16];
+                    snprintf(s_search, sizeof(s_search), "\n\t\t%04x %04x", sub_vendor, sub_device);
+                    const char* s_line = memmem(d_name, st.st_size - (d_name - map), s_search, 11);
+                    if (s_line && s_line < (d_line + 5000)) { // Limit search range to reasonable distance
+                        const char* s_name = s_line + 11;
+                        while (*s_name == ' ' || *s_name == '\t') s_name++;
+                        const char* s_end = strchr(s_name, '\n');
+                        if (s_end) { d_name = s_name; d_end = s_end; }
+                    }
+                }
+
                 const char* br = strchr(d_name, '[');
                 if (br && br < d_end) {
                     const char* br_end = strchr(br, ']');
@@ -182,7 +221,10 @@ static void get_gpu(char* gpu) {
                 if (d_end) {
                     size_t len = d_end - d_name;
                     if (len > 120) len = 120;
-                    const char* prefix = (vendor == 0x10de) ? "NVIDIA " : (vendor == 0x1002) ? "AMD " : "";
+                    const char* prefix = "";
+                    if (d_name[0] != 'N' && d_name[0] != 'A') { // Simple heuristic to avoid double prefix
+                        prefix = (vendor == 0x10de) ? "NVIDIA " : (vendor == 0x1002) ? "AMD " : "";
+                    }
                     snprintf(gpu, SMALL_BUFFER, "%s%.*s", prefix, (int)len, d_name);
                     munmap(map, st.st_size);
                     return;
