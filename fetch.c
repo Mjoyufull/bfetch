@@ -14,6 +14,9 @@
 #include <time.h>
 #include <sys/ioctl.h>
 #include <stdint.h>
+#if defined(__i386__) || defined(__x86_64__)
+#include <cpuid.h>
+#endif
 
 // Buffer sizes optimized for performance
 #define BUFFER_SIZE 65536
@@ -95,20 +98,20 @@ static int count_dir(const char* path) {
 // CPU Detection: CPUID Assembly (Fastest)
 // --------------------------------------------------------------------------------
 static void get_cpu(char* cpu) {
+#if defined(__i386__) || defined(__x86_64__)
     unsigned int eax, ebx, ecx, edx;
     char brand[49] = {0};
 
-    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0x80000000));
+    __get_cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
     if (eax >= 0x80000004) {
         unsigned int* b = (unsigned int*)brand;
         for (unsigned int i = 0; i < 3; i++) {
-            __asm__ volatile("cpuid" : "=a"(b[i*4+0]), "=b"(b[i*4+1]), "=c"(b[i*4+2]), "=d"(b[i*4+3]) : "a"(0x80000002 + i));
+            __get_cpuid(0x80000002 + i, &b[i*4+0], &b[i*4+1], &b[i*4+2], &b[i*4+3]);
         }
         brand[48] = '\0';
         char* s = brand;
         while (*s == ' ') s++;
         
-        // Clean up brand string (remove speed info and redundant core count info)
         char clean_brand[SMALL_BUFFER];
         char* d = clean_brand;
         int space = 0;
@@ -140,22 +143,17 @@ static void get_cpu(char* cpu) {
                  space = 0;
              }
         }
-        // Remove trailing numbers or isolated artifacts (like the '6' or 'V2')
         while (d > clean_brand) {
             char last = *(d-1);
             if (last == ' ' || last == '-' || last == '/') { d--; continue; }
             if (isdigit(last)) {
-                // Only remove if it's an isolated digit (preceded by space)
                 if (d > clean_brand + 1 && *(d-2) == ' ') { d--; continue; }
             }
             break;
         }
         *d = '\0';
 
-        // Get thread count
         int threads = get_nprocs();
-
-        // Get frequency from sysfs (fastest)
         double ghz = 0.0;
         char freq_buf[32];
         if (read_file_fast("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", freq_buf, sizeof(freq_buf))) {
@@ -170,6 +168,50 @@ static void get_cpu(char* cpu) {
     } else {
         strcpy(cpu, "Unknown Processor");
     }
+#elif defined(__arm__) || defined(__aarch64__)
+    char buf[BUFFER_SIZE];
+    if (read_file_fast("/proc/cpuinfo", buf, sizeof(buf))) {
+        char* model = strstr(buf, "model name");
+        if (!model) model = strstr(buf, "Hardware");
+        if (!model) model = strstr(buf, "Processor");
+        
+        if (model) {
+            char* start = strchr(model, ':');
+            if (start) {
+                start++;
+                while (*start == ' ') start++;
+                char* end = strchr(start, '\n');
+                if (end) {
+                    size_t len = end - start;
+                    if (len > SMALL_BUFFER - 1) len = SMALL_BUFFER - 1;
+                    memcpy(cpu, start, len);
+                    cpu[len] = '\0';
+                    
+                    int threads = get_nprocs();
+                    char freq_buf[32];
+                    double ghz = 0.0;
+                    if (read_file_fast("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", freq_buf, sizeof(freq_buf))) {
+                        ghz = strtod(freq_buf, NULL) / 1000000.0;
+                    }
+                    
+                    if (ghz > 0.1) {
+                        char final_cpu[SMALL_BUFFER];
+                        snprintf(final_cpu, SMALL_BUFFER, "%s (%d) @ %.2f GHz", cpu, threads, ghz);
+                        strcpy(cpu, final_cpu);
+                    } else {
+                        char final_cpu[SMALL_BUFFER];
+                        snprintf(final_cpu, SMALL_BUFFER, "%s (%d)", cpu, threads);
+                        strcpy(cpu, final_cpu);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    strcpy(cpu, "ARM Processor");
+#else
+    strcpy(cpu, "Unknown Processor");
+#endif
 }
 
 // --------------------------------------------------------------------------------
@@ -188,11 +230,31 @@ static void get_gpu(char* gpu) {
             if (read_file_fast(path, buf, sizeof(buf))) {
                 device = strtoul(buf, NULL, 16);
             }
-            // Attempt to get subsystem IDs for more specific naming
+            // attempt to get subsystem IDs for more specific naming
             snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/subsystem_vendor", i);
             if (read_file_fast(path, buf, sizeof(buf))) sub_vendor = strtoul(buf, NULL, 16);
             snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/subsystem_device", i);
             if (read_file_fast(path, buf, sizeof(buf))) sub_device = strtoul(buf, NULL, 16);
+        } else {
+            // Fallback for integrated GPUs (ARM) that don't have a PCI vendor file
+            snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/uevent", i);
+            char uevent[BUFFER_SIZE];
+            if (read_file_fast(path, uevent, sizeof(uevent))) {
+                char* p = strstr(uevent, "DRIVER=");
+                if (p) {
+                    p += 7;
+                    char* end = strchr(p, '\n');
+                    if (end) {
+                        size_t len = end - p;
+                        if (len > SMALL_BUFFER - 1) len = SMALL_BUFFER - 1;
+                        memcpy(gpu, p, len);
+                        gpu[len] = '\0';
+                        // Capitalize driver name as a fallback for GPU name idk
+                        gpu[0] = toupper(gpu[0]);
+                        return;
+                    }
+                }
+            }
         }
     }
     
