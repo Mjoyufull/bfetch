@@ -112,21 +112,25 @@ static void get_cpu(char* cpu) {
         char clean_brand[SMALL_BUFFER];
         char* d = clean_brand;
         int space = 0;
-        const char* keywords[] = {"-Core", "Core", "Six-Core", "Eight-Core", "Quad-Core", "Processor", "Twelve-Core", "Sixteen-Core", NULL};
+        const char* keywords[] = {
+            "Six-Core", "Eight-Core", "Quad-Core", "Twelve-Core", "Sixteen-Core", 
+            "24-Core", "32-Core", "64-Core", "6-Core", "8-Core", "12-Core", "16-Core", 
+            "-Core", "Core", "Processor", "with Radeon Graphics", "with Graphics", NULL
+        };
         
         while (*s && (d - clean_brand) < SMALL_BUFFER - 64) {
              if (*s == '@') break; 
              
-             int salt = 0;
+             int matched = 0;
              for (int i = 0; keywords[i]; i++) {
                  size_t klen = strlen(keywords[i]);
                  if (strncasecmp(s, keywords[i], klen) == 0) {
                      s += klen;
-                     salt = 1;
+                     matched = 1;
                      break;
                  }
              }
-             if (salt) continue;
+             if (matched) continue;
 
              if (*s == ' ') {
                  if (!space) { *d++ = ' '; space = 1; }
@@ -136,11 +140,10 @@ static void get_cpu(char* cpu) {
                  space = 0;
              }
         }
-        // Remove trailing numbers or artifacts (like the '6' in '3600 6')
-        while (d > clean_brand && (isdigit(*(d-1)) || *(d-1) == ' ')) {
-            if (*(d-1) == ' ') { d--; continue; }
-            // If it's a digit, we only remove it if it's isolated (preceded by a space)
-            if (d > clean_brand + 1 && *(d-2) == ' ') { d--; continue; }
+        // Remove trailing numbers or isolated artifacts
+        while (d > clean_brand && (isdigit(*(d-1)) || *(d-1) == ' ' || *(d-1) == '-')) {
+            if (*(d-1) == ' ' || *(d-1) == '-') { d--; continue; }
+            if (d > clean_brand + 1 && *(d-2) == ' ') { d--; continue; } 
             break;
         }
         *d = '\0';
@@ -194,21 +197,15 @@ static void get_gpu(char* gpu) {
     // For AMD, try to get specific marketing name from driver (fastest and most specific)
     if (vendor == 0x1002) {
         char drm_path[64];
-        snprintf(drm_path, sizeof(drm_path), "/dev/dri/renderD%d", 128); // Try default render node
+        snprintf(drm_path, sizeof(drm_path), "/dev/dri/renderD%d", 128);
         int fd = open(drm_path, O_RDONLY);
         if (fd != -1) {
             char m_name[128] = {0};
-            struct {
-                uint64_t return_pointer;
-                uint32_t return_size;
-                uint32_t query;
-            } args = { (uintptr_t)m_name, sizeof(m_name), 0x1C }; // 0x1C = MARKETING_NAME
-            
-            // Re-defined _IOWR manual for portability: ((3 << 30) | ('d' << 8) | (0x45) | (sizeof(args) << 16))
+            // Try query 0x1C (MARKETING_NAME) with a slightly larger buffer just in case
+            struct { uint64_t ptr; uint32_t size; uint32_t query; uint8_t pad[64]; } args = { (uintptr_t)m_name, sizeof(m_name), 0x1C, {0} };
             if (ioctl(fd, (uint32_t)0xc0106445, &args) >= 0 && m_name[0] != '\0') {
                 strcpy(gpu, m_name);
-                close(fd);
-                return;
+                close(fd); return;
             }
             close(fd);
         }
@@ -247,11 +244,11 @@ static void get_gpu(char* gpu) {
 
                 // If we have subsystem info, try to find the specific manufacturer name
                 if (sub_vendor && sub_device) {
-                    char s_search[16];
+                    char s_search[32];
                     snprintf(s_search, sizeof(s_search), "\n\t\t%04x %04x", sub_vendor, sub_device);
-                    const char* s_line = memmem(d_name, st.st_size - (d_name - map), s_search, 11);
-                    if (s_line && s_line < (d_line + 5000)) { // Limit search range to reasonable distance
-                        const char* s_name = s_line + 11;
+                    const char* s_line = memmem(d_name, st.st_size - (d_name - map), s_search, strlen(s_search));
+                    if (s_line && s_line < (d_line + 10000)) { 
+                        const char* s_name = s_line + strlen(s_search);
                         while (*s_name == ' ' || *s_name == '\t') s_name++;
                         const char* s_end = strchr(s_name, '\n');
                         if (s_end) { d_name = s_name; d_end = s_end; }
