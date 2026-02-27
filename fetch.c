@@ -385,15 +385,15 @@ static int g_off = 0;
 
 static void print_gentoo_fetch(const struct sysinfo_fast* info) {
     OUT(RESET BOLD " ┌──┐" NORD1 " ┌──────────────────────────────────┐ " NORD15 BOLD "┌─────┐\n");
-    OUT(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 " │─────────" RESET BOLD "\\\\\\\\\\\\\\\\\\\\" NORD1 "────────────────│ " NORD15 BOLD "│  G  │\n");
-    OUT(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 " │───────" RESET BOLD "//+++++++++++\\" NORD1 BOLD "─────────────│ " NORD15 BOLD "│  a  │\n");
+    OUT(RESET BOLD " │" NORD1 "▒▒" RESET BOLD "│" NORD1 " │─────────" RESET BOLD "\\\\\\\\\\\\\\\\\\\\" NORD1 "───────────────│ " NORD15 BOLD "│  G  │\n");
+    OUT(RESET BOLD " │" NORD0 "██" RESET BOLD "│" NORD1 " │───────" RESET BOLD "//+++++++++++\\" NORD1 BOLD "─────────────│ " NORD15 BOLD "│  e  │\n");
     OUT(RESET BOLD " │" NORD1 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "//+++++" NORD1 BOLD "\\\\\\" RESET BOLD "+++++\\" NORD1 BOLD "────────────│ " NORD15 BOLD "│  n  │\n");
-    OUT(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//+++++" NORD1 BOLD "// " RESET BOLD "/" RESET BOLD "+++++++\\" NORD1 BOLD "──────────│ " NORD15 BOLD "│  y  │\n");
-    OUT(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "+++++++" NORD1 BOLD "\\\\" RESET BOLD "++++++++++\\" NORD1 BOLD "────────│ " NORD15 BOLD "│  m  │\n");
-    OUT(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 " │────────" RESET BOLD "++++++++++++++++++" NORD1 BOLD "\\\\" NORD1 "──────│ " NORD15 BOLD "│  e  │\n");
-    OUT(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 " │─────────" RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "───────│ " NORD15 BOLD "│  d  │\n");
-    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 " │───────" RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "─────────│ " NORD15 BOLD "│  e  │\n");
-    OUT(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 " │──── " RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "───────────│ " NORD15 BOLD "└─────┘\n");
+    OUT(RESET BOLD " │" NORD11 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//+++++" NORD1 BOLD "// " RESET BOLD "/" RESET BOLD "+++++++\\" NORD1 BOLD "──────────│ " NORD15 BOLD "│  t  │\n");
+    OUT(RESET BOLD " │" NORD12 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "+++++++" NORD1 BOLD "\\\\" RESET BOLD "++++++++++\\" NORD1 BOLD "────────│ " NORD15 BOLD "│  o  │\n");
+    OUT(RESET BOLD " │" NORD13 "██" RESET BOLD "│" NORD1 " │────────" RESET BOLD "++++++++++++++++++" NORD1 BOLD "\\\\" NORD1 "──────│ " NORD15 BOLD "│  o  │\n");
+    OUT(RESET BOLD " │" NORD14 "██" RESET BOLD "│" NORD1 " │─────────" RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "───────│ " NORD15 BOLD "└─────┘\n");
+    OUT(RESET BOLD " │" NORD7 "██" RESET BOLD "│" NORD1 " │───────" RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "─────────│ \n");
+    OUT(RESET BOLD " │" NORD8 "██" RESET BOLD "│" NORD1 " │──── " RESET BOLD "//++++++++++++++" NORD1 BOLD "//" NORD1 "───────────│ \n");
     OUT(RESET BOLD " │" NORD9 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//++++++++++" NORD1 BOLD "//" NORD1 "───────────────│\n");
     OUT(RESET BOLD " │" NORD10 "██" RESET BOLD "│" NORD1 " │─────" RESET BOLD "//+++++++" NORD1 BOLD "//" NORD1 "──────────────────│\n");
     OUT(RESET BOLD " │" NORD15 "██" RESET BOLD "│" NORD1 " │──────" RESET BOLD "////////" NORD1 BOLD "────────────────────│\n");
