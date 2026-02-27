@@ -65,4 +65,4 @@ nix run github:Mjoyufull/bfetch
 
 ## License
 
-MIT License
+AGPL License
