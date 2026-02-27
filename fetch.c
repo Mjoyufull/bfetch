@@ -12,6 +12,8 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <sys/ioctl.h>
+#include <stdint.h>
 
 // Buffer sizes optimized for performance
 #define BUFFER_SIZE 65536
@@ -106,21 +108,41 @@ static void get_cpu(char* cpu) {
         char* s = brand;
         while (*s == ' ') s++;
         
-        // Clean up brand string (remove speed info and extra spaces)
+        // Clean up brand string (remove speed info and redundant core count info)
         char clean_brand[SMALL_BUFFER];
         char* d = clean_brand;
         int space = 0;
+        const char* keywords[] = {"-Core", "Core", "Six-Core", "Eight-Core", "Quad-Core", "Processor", "Twelve-Core", "Sixteen-Core", NULL};
+        
         while (*s && (d - clean_brand) < SMALL_BUFFER - 64) {
-             if (*s == '@') break; // Stop at @ to add our own speed
+             if (*s == '@') break; 
+             
+             int salt = 0;
+             for (int i = 0; keywords[i]; i++) {
+                 size_t klen = strlen(keywords[i]);
+                 if (strncasecmp(s, keywords[i], klen) == 0) {
+                     s += klen;
+                     salt = 1;
+                     break;
+                 }
+             }
+             if (salt) continue;
+
              if (*s == ' ') {
                  if (!space) { *d++ = ' '; space = 1; }
+                 s++;
              } else {
-                 *d++ = *s;
+                 *d++ = *s++;
                  space = 0;
              }
-             s++;
         }
-        if (d > clean_brand && *(d-1) == ' ') d--;
+        // Remove trailing numbers or artifacts (like the '6' in '3600 6')
+        while (d > clean_brand && (isdigit(*(d-1)) || *(d-1) == ' ')) {
+            if (*(d-1) == ' ') { d--; continue; }
+            // If it's a digit, we only remove it if it's isolated (preceded by a space)
+            if (d > clean_brand + 1 && *(d-2) == ' ') { d--; continue; }
+            break;
+        }
         *d = '\0';
 
         // Get thread count
@@ -169,6 +191,29 @@ static void get_gpu(char* gpu) {
     
     if (vendor == 0) { strcpy(gpu, "Unknown GPU"); return; }
     
+    // For AMD, try to get specific marketing name from driver (fastest and most specific)
+    if (vendor == 0x1002) {
+        char drm_path[64];
+        snprintf(drm_path, sizeof(drm_path), "/dev/dri/renderD%d", 128); // Try default render node
+        int fd = open(drm_path, O_RDONLY);
+        if (fd != -1) {
+            char m_name[128] = {0};
+            struct {
+                uint64_t return_pointer;
+                uint32_t return_size;
+                uint32_t query;
+            } args = { (uintptr_t)m_name, sizeof(m_name), 0x1C }; // 0x1C = MARKETING_NAME
+            
+            // Re-defined _IOWR manual for portability: ((3 << 30) | ('d' << 8) | (0x45) | (sizeof(args) << 16))
+            if (ioctl(fd, (uint32_t)0xc0106445, &args) >= 0 && m_name[0] != '\0') {
+                strcpy(gpu, m_name);
+                close(fd);
+                return;
+            }
+            close(fd);
+        }
+    }
+
     // Open pci.ids
     int fd = open("/usr/share/hwdata/pci.ids", O_RDONLY);
     if (fd == -1) fd = open("/usr/share/misc/pci.ids", O_RDONLY);
