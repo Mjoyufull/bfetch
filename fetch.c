@@ -140,10 +140,14 @@ static void get_cpu(char* cpu) {
                  space = 0;
              }
         }
-        // Remove trailing numbers or isolated artifacts
-        while (d > clean_brand && (isdigit(*(d-1)) || *(d-1) == ' ' || *(d-1) == '-')) {
-            if (*(d-1) == ' ' || *(d-1) == '-') { d--; continue; }
-            if (d > clean_brand + 1 && *(d-2) == ' ') { d--; continue; } 
+        // Remove trailing numbers or isolated artifacts (like the '6' or 'V2')
+        while (d > clean_brand) {
+            char last = *(d-1);
+            if (last == ' ' || last == '-' || last == '/') { d--; continue; }
+            if (isdigit(last)) {
+                // Only remove if it's an isolated digit (preceded by space)
+                if (d > clean_brand + 1 && *(d-2) == ' ') { d--; continue; }
+            }
             break;
         }
         *d = '\0';
@@ -194,20 +198,45 @@ static void get_gpu(char* gpu) {
     
     if (vendor == 0) { strcpy(gpu, "Unknown GPU"); return; }
     
-    // For AMD, try to get specific marketing name from driver (fastest and most specific)
+    // For AMD, get specific marketing name from amdgpu.ids
     if (vendor == 0x1002) {
-        char drm_path[64];
-        snprintf(drm_path, sizeof(drm_path), "/dev/dri/renderD%d", 128);
-        int fd = open(drm_path, O_RDONLY);
-        if (fd != -1) {
-            char m_name[128] = {0};
-            // Try query 0x1C (MARKETING_NAME) with a slightly larger buffer just in case
-            struct { uint64_t ptr; uint32_t size; uint32_t query; uint8_t pad[64]; } args = { (uintptr_t)m_name, sizeof(m_name), 0x1C, {0} };
-            if (ioctl(fd, (uint32_t)0xc0106445, &args) >= 0 && m_name[0] != '\0') {
-                strcpy(gpu, m_name);
-                close(fd); return;
+        // gettin amdgpu.ids (Specific model based on revision)
+        char rev_buf[16];
+        unsigned int revision = 0;
+        for (int i = 0; i < 8; i++) {
+            snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/revision", i);
+            if (read_file_fast(path, rev_buf, sizeof(rev_buf))) {
+                revision = strtoul(rev_buf, NULL, 16);
+                break;
             }
-            close(fd);
+        }
+
+        int afd = open("/usr/share/libdrm/amdgpu.ids", O_RDONLY);
+        if (afd != -1) {
+            struct stat ast; fstat(afd, &ast);
+            char* amap = mmap(NULL, ast.st_size, PROT_READ, MAP_PRIVATE, afd, 0);
+            close(afd);
+            if (amap != MAP_FAILED) {
+                char s_key[16];
+                snprintf(s_key, sizeof(s_key), "%04X,\t%02X,", device, revision);
+                const char* s_line = memmem(amap, ast.st_size, s_key, strlen(s_key));
+                if (!s_line) {
+                    snprintf(s_key, sizeof(s_key), "%04X, %02X,", device, revision);
+                    s_line = memmem(amap, ast.st_size, s_key, strlen(s_key));
+                }
+                if (s_line) {
+                    const char* s_name = s_line + strlen(s_key);
+                    while (*s_name == ' ' || *s_name == '\t') s_name++;
+                    const char* s_end = strchr(s_name, '\n');
+                    if (s_end) {
+                        size_t slen = s_end - s_name;
+                        if (slen > SMALL_BUFFER - 1) slen = SMALL_BUFFER - 1;
+                        memcpy(gpu, s_name, slen); gpu[slen] = '\0';
+                        munmap(amap, ast.st_size); return;
+                    }
+                }
+                munmap(amap, ast.st_size);
+            }
         }
     }
 
